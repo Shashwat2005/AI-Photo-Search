@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>AI Photo Search</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script type="module" src="main.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 16px;
+      background: #fafafa;
+    }
+
+    h2 {
+      margin-bottom: 10px;
+    }
+
+    .search-bar {
+      margin-bottom: 16px;
+    }
+
+    input {
+      width: 300px;
+      padding: 8px;
+      font-size: 16px;
+    }
+
+    button {
+      padding: 8px 14px;
+      font-size: 16px;
+      margin-left: 8px;
+      cursor: pointer;
+    }
+
+    .status {
+      margin-top: 10px;
+      color: #555;
+    }
+
+    .grid {
+      margin-top: 20px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 8px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+
+    .card:hover {
+      transform: scale(1.03);
+    }
+
+    .card img {
+      width: 100%;
+      height: 140px;
+      object-fit: cover;
+      border-radius: 6px;
+    }
+
+    .score {
+      font-size: 13px;
+      color: #666;
+      margin-top: 6px;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>AI Photo Search</h2>
+
+
+  <div class="search-bar">
+    <input id="query" placeholder="Search images..." />
+    <button id="search-btn">Search</button>
+<button id="select-folder-btn">Select Folder</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="grid" id="results"></div>
+ 
+
+ 

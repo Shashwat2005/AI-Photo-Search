@@ -1,0 +1,8 @@
+{
+  "identifier": "dialog-capability",
+  "description": "Allow file and folder dialogs",
+  "windows": ["main"],
+  "permissions": [
+    "dialog:default"
+  ]
+}

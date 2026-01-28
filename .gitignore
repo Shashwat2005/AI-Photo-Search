@@ -1,0 +1,5 @@
+__pycache__/
+venv/
+indexes/
+images/
+src-tauri/assets

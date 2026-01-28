@@ -1,0 +1,19 @@
+ {
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Main app permissions",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    {
+      "identifier":"opener:allow-open-path",
+      "allow":[
+        {
+          "path":"/**"
+        }
+      ]
+    }
+  ]
+}
+
