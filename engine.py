@@ -12,7 +12,10 @@ from folder_indexing import (
 # ---------- PATHS ----------
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_ROOT = BASE_DIR / "indexes"
-ASSETS_ROOT = BASE_DIR / "src-tauri" / "assets" / "images"
+
+# Keep runtime thumbnails outside the Tauri source tree.
+# Writing into src-tauri/assets during dev can trigger app reload/restart.
+ASSETS_ROOT = BASE_DIR / ".thumb_cache" / "images"
 
 INDEX_ROOT.mkdir(exist_ok=True)
 ASSETS_ROOT.mkdir(parents=True, exist_ok=True)
@@ -88,18 +91,22 @@ def main():
             error("This folder contains no images")
 
         fid = folder_id(folder)
+        was_cached = folder_already_indexed(folder)
 
         try:
-            if not folder_already_indexed(folder):
+            if not was_cached:
                 index_images_from_folder(folder)
-                copy_images_to_assets(folder, fid)
+
+            # Always sync thumbnails even for cached indexes.
+            # This fixes missing thumbnails when cache existed before copy logic changed.
+            copy_images_to_assets(folder, fid)
 
             success({
                 "folder": str(folder),
                 "folder_id": fid,
                 "asset_base": f"/images/{fid}",
                 "indexed": len(images),
-                "cached": folder_already_indexed(folder),
+                "cached": was_cached,
             })
 
         except Exception as e:
@@ -122,9 +129,10 @@ def main():
             results = search_images_in_folder(folder, query)
             fid = folder_id(folder)
 
-            # attach thumbnail path
+            # attach thumbnail path - return full file path for file:// protocol
             for r in results:
-                r["thumbnail"] = f"/images/{fid}/{Path(r['path']).name}"
+                thumb_path = ASSETS_ROOT / fid / Path(r['path']).name
+                r["thumbnail"] = str(thumb_path)
 
             success({
                 "query": query,

@@ -1,3 +1,7 @@
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
+
 document.addEventListener("DOMContentLoaded", () => {
   let indexedFolder = null;
   let isIndexing = false;
@@ -7,26 +11,26 @@ document.addEventListener("DOMContentLoaded", () => {
   const statusEl = document.getElementById("status");
   const resultsGrid = document.getElementById("results");
 
-  const { dialog, opener, core } = window.__TAURI__;
-
-  async function openFile(path) {
+  /* ------------------ OPEN IMAGE ------------------ */
+  async function openImage(path) {
     try {
-      await opener.openPath(path);
+      await openPath(path);
     } catch (err) {
-      console.error("Failed to open file:", err);
+      console.error("Open failed:", err);
     }
   }
 
+  /* ------------------ SEARCH ------------------ */
   async function search() {
-    const query = document.getElementById("query").value;
+    const query = document.getElementById("query").value.trim();
 
     if (!indexedFolder) {
-      alert("Please select and index a folder first.");
+      alert("Please select a folder first.");
       return;
     }
 
     if (!query) {
-      statusEl.textContent = "Please enter a search query.";
+      statusEl.textContent = "Enter a search query.";
       return;
     }
 
@@ -34,12 +38,12 @@ document.addEventListener("DOMContentLoaded", () => {
     resultsGrid.innerHTML = "";
 
     try {
-      const raw = await core.invoke("engine_search", {
+      const data = await invoke("engine_search", {
         folder: indexedFolder,
-        query,
+        query
       });
 
-      const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+      console.log("Search results:", data);
 
       if (!data.results || data.results.length === 0) {
         statusEl.textContent = "No results found.";
@@ -51,32 +55,50 @@ document.addEventListener("DOMContentLoaded", () => {
       for (const item of data.results) {
         const card = document.createElement("div");
         card.className = "card";
-        card.onclick = () => openFile(item.path);
+        card.onclick = () => openImage(item.path);
 
         const img = document.createElement("img");
-       img.src = `asset://localhost${item.thumbnail}`;
 
+        const thumbnailPath = String(item.thumbnail || "");
+        img.loading = "lazy";
+        img.alt = "Search result image";
+        
+        // Add error handling for broken images
+        img.onerror = () => {
+          card.style.opacity = "0.5";
+          card.title = "Image failed to load";
+          console.warn("Failed to load image:", img.src);
+        };
+
+        try {
+          img.src = await invoke("thumbnail_data_uri", { path: thumbnailPath });
+        } catch (thumbErr) {
+          console.warn("Thumbnail data URI failed, trying file URI fallback:", thumbErr);
+          const normalizedPath = thumbnailPath.replace(/\\/g, "/");
+          img.src = `file:///${encodeURI(normalizedPath)}`;
+        }
+
+        console.log("Loading image from:", img.src.slice(0, 64));
         card.appendChild(img);
         resultsGrid.appendChild(card);
       }
     } catch (err) {
       console.error(err);
-      statusEl.textContent = "Search failed.";
+      statusEl.textContent = `Search failed: ${String(err)}`;
     }
   }
 
+  /* ------------------ SELECT FOLDER ------------------ */
   async function selectFolder() {
-    const folderPath = await dialog.open({ directory: true });
+    const folderPath = await open({ directory: true });
     if (!folderPath) return;
 
     setIndexingState(true);
 
     try {
-      const raw = await core.invoke("engine_index", {
-        folder: folderPath,
+      const data = await invoke("engine_index", {
+        folder: folderPath
       });
-
-      const data = typeof raw === "string" ? JSON.parse(raw) : raw;
 
       if (data.status !== "ok") {
         alert("Indexing failed ❌\n\n" + data.message);
@@ -90,22 +112,25 @@ document.addEventListener("DOMContentLoaded", () => {
       resultsGrid.innerHTML = "";
     } catch (err) {
       console.error(err);
-      alert("Something went wrong while indexing 😕");
+      alert("Indexing error.\n\n" + String(err));
+      statusEl.textContent = "Indexing failed.";
     } finally {
       setIndexingState(false);
     }
   }
 
-  function setIndexingState(indexing) {
-    isIndexing = indexing;
-    searchBtn.disabled = indexing;
-    selectBtn.disabled = indexing;
+  /* ------------------ UI STATE ------------------ */
+  function setIndexingState(state) {
+    isIndexing = state;
+    searchBtn.disabled = state;
+    selectBtn.disabled = state;
 
-    if (indexing) {
+    if (state) {
       statusEl.textContent = "Indexing images… please wait ⏳";
     }
   }
 
+  /* ------------------ EVENTS ------------------ */
   searchBtn.addEventListener("click", search);
   selectBtn.addEventListener("click", selectFolder);
 });

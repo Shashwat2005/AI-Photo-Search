@@ -1,5 +1,37 @@
+# Python caches and environments
 __pycache__/
+*.py[cod]
 venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# Local data and generated search artifacts
 indexes/
 images/
-src-tauri/assets
+.thumb_cache/
+
+# Runtime-generated thumbnail/assets directories
+src-tauri/assets/
+ai-photo-ui/src-tauri/assets/images/
+
+# Tauri/Rust build output
+target/
+ai-photo-ui/src-tauri/target/
+
+# Node/Vite build artifacts
+node_modules/
+dist/
+ai-photo-ui/node_modules/
+ai-photo-ui/dist/
+
+# Logs and local env files
+*.log
+.env
+.env.*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
