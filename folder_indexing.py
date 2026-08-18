@@ -319,7 +319,11 @@ def _load_query_cache(index_dir: Path) -> dict:
 
 
 def _save_query_cache(index_dir: Path, cache: dict):
-    _query_cache_file(index_dir).write_text(json.dumps(cache, indent=2))
+    # Use compact JSON (separators without spaces) — 30–40% smaller and faster
+    # than indent=2 for a 200-entry cache, and faster to parse on next load.
+    _query_cache_file(index_dir).write_text(
+        json.dumps(cache, separators=(",", ":"))
+    )
 
 
 def _load_temp_manifest(index_dir: Path) -> dict:
@@ -600,73 +604,70 @@ def _get_image_metadata(image_path: Path):
 
 
 def _apply_filters(results, image_path_list, filters=None):
-    """Apply filters to search results"""
+    """Apply filters to search results.
+
+    Fast path: if only `file_types` is requested we skip the expensive
+    Image.open() call entirely, since we only need the file extension.
+    """
     if not filters:
         return results
-    
+
+    # Determine which metadata fields are actually needed
+    need_resolution = "min_width" in filters or "min_height" in filters
+    need_date       = "date_from" in filters or "date_to"   in filters
+    need_metadata   = need_resolution or need_date
+
     filtered = []
-    
+
     for result in results:
         path = result["path"]
-        
-        # File type filter
+
+        # File type filter — extension only, no I/O
         if "file_types" in filters and filters["file_types"]:
-            file_ext = Path(path).suffix.lower()
-            if file_ext not in filters["file_types"]:
+            if Path(path).suffix.lower() not in filters["file_types"]:
                 continue
-        
-        # Get image metadata for other filters
-        metadata = _get_image_metadata(Path(path))
-        
-        # Resolution filter
-        if "min_width" in filters and metadata["width"]:
-            if metadata["width"] < filters["min_width"]:
-                continue
-        if "min_height" in filters and metadata["height"]:
-            if metadata["height"] < filters["min_height"]:
-                continue
-        
-        # Date range filter
-        if "date_from" in filters and metadata["mtime"]:
-            if metadata["mtime"] < filters["date_from"]:
-                continue
-        if "date_to" in filters and metadata["mtime"]:
-            if metadata["mtime"] > filters["date_to"]:
-                continue
-        
+
+        # Resolution / date filters — stat + optional open only when needed
+        if need_metadata:
+            meta = _get_image_metadata(Path(path))
+
+            if need_resolution:
+                if "min_width"  in filters and meta["width"]  and meta["width"]  < filters["min_width"]:
+                    continue
+                if "min_height" in filters and meta["height"] and meta["height"] < filters["min_height"]:
+                    continue
+
+            if need_date:
+                mtime = meta["mtime"]
+                if "date_from" in filters and mtime and mtime < filters["date_from"]:
+                    continue
+                if "date_to"   in filters and mtime and mtime > filters["date_to"]:
+                    continue
+
         filtered.append(result)
-    
+
     return filtered
 
 
 def _apply_sorting(results, sort_by="relevance"):
-    """Apply sorting to search results"""
+    """Apply sorting to search results.
+
+    Uses the 'mtime' field already present in each result dict (populated
+    during search / list) rather than re-calling stat() on disk, which
+    would cost O(N) syscalls on every sort operation.
+    """
     if sort_by == "relevance":
-        # Already sorted by relevance (score descending)
         return sorted(results, key=lambda x: x.get("score", 0), reverse=True)
-    
+
     elif sort_by == "newest":
-        # Sort by modification time (newest first)
-        def get_mtime(result):
-            try:
-                return Path(result["path"]).stat().st_mtime
-            except:
-                return 0
-        return sorted(results, key=get_mtime, reverse=True)
-    
+        return sorted(results, key=lambda x: x.get("mtime", 0), reverse=True)
+
     elif sort_by == "oldest":
-        # Sort by modification time (oldest first)
-        def get_mtime(result):
-            try:
-                return Path(result["path"]).stat().st_mtime
-            except:
-                return 0
-        return sorted(results, key=get_mtime)
-    
+        return sorted(results, key=lambda x: x.get("mtime", 0))
+
     elif sort_by == "filename":
-        # Sort by filename alphabetically
         return sorted(results, key=lambda x: Path(x["path"]).name.lower())
-    
+
     return results
 
 
@@ -829,8 +830,12 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
         # Already normalized from cache
         query_emb = query_emb.reshape(1, -1)
 
-    # 5. FAISS search - fetch more to account for filtering
-    search_k = min(top_k * 3, index.ntotal)
+    # 5. FAISS search — overfetch only when filters are active so we have
+    #    enough headroom after filtering; with no filters top_k is exact.
+    if filters:
+        search_k = min(top_k * 4, index.ntotal)
+    else:
+        search_k = min(top_k, index.ntotal)
     scores, ids = index.search(query_emb, search_k)
 
     # 6. Build results - use pre-cached mtimes from metadata if available
@@ -864,23 +869,8 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
     entries[cache_key] = results
 
     if len(entries) > 200:
-        trimmed = {}
-        for key in list(entries.keys())[-200:]:
-            trimmed[key] = entries[key]
-        entries = trimmed
-
-    _save_query_cache(index_dir, {
-        "index_signature": index_sig,
-        "entries": entries,
-    })
-
-    return results
-
-    if len(entries) > 200:
-        trimmed = {}
-        for key in list(entries.keys())[-200:]:
-            trimmed[key] = entries[key]
-        entries = trimmed
+        # Keep only the 200 most-recent entries
+        entries = dict(list(entries.items())[-200:])
 
     _save_query_cache(index_dir, {
         "index_signature": index_sig,
