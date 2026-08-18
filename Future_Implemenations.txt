@@ -1,0 +1,112 @@
+AI Photo Search - Offline-First Future Implementation Tracker
+
+Last updated: 2026-04-01
+Owner: Shashwat
+
+Vision
+- Build a fully offline desktop app.
+- No user photo uploads, no cloud dependency, no internet requirement for core features.
+- Keep all user data local on disk in file-based indexes and cache manifests.
+
+Non-Negotiable Product Rules
+- [ ] Offline only by default (core features must work with internet disconnected)
+- [ ] No automatic upload/sync to external services
+- [ ] No cloud database requirement
+- [x] User controls local cache cleanup and data retention
+
+What Is Completed (already done)
+- [x] Incremental folder indexing (re-index unchanged folders instantly)
+- [x] Add/modify/delete file detection and index update
+- [x] Folder memory using local index manifests and embedding cache files
+- [x] Query result caching to reduce repeated computation
+- [x] Thumbnail pipeline fixed for local rendering in desktop app
+- [x] App restart-after-indexing bug fixed
+
+Current System Design (Offline-First)
+- Storage model: file-based local storage only (no mandatory SQL database)
+- Per-folder index directory:
+	- index.faiss
+	- metadata.json
+	- manifest.json
+	- query_cache.json
+	- embeddings/*.npy
+- Local thumbnail cache directory:
+	- .thumb_cache/images/<folder_id>/...
+- Runtime components:
+	- IndexManager (incremental scan and embedding updates)
+	- SearchManager (vector search + cache)
+	- ThumbnailService (local thumbnail generation and cleanup)
+
+Feature Backlog (Planned)
+
+P0 - Core Offline Reliability
+- [x] Add explicit offline mode indicator in UI ("Offline: Active")
+- [x] Add startup self-check: verify model files and local writable paths
+- [x] Add resilient recovery for interrupted indexing (resume from manifest)
+- [x] Add local data cleanup screen (clear cache/index by folder)
+
+P1 - Performance and Scale
+- [x] Add parallel image decoding + embedding worker pool
+- [x] Add adaptive batch size for embedding generation (CPU/GPU aware)
+- [x] Keep hot folder FAISS index loaded in memory during session
+- [x] Add LRU cache for query embeddings and top-N results (session cache)
+- [x] Add index compaction and orphan file cleanup job
+
+P2 - Search Experience
+- [x] Add filters: file type, orientation, resolution, date range
+- [x] Add sort: relevance, newest, oldest, filename
+- [x] Add similar-image search from selected image
+- [x] Add pinned searches and recent search history
+
+P3 - Productivity Features
+- [x] Multi-select image cards
+- [x] Bulk actions: open, copy path, export manifest
+- [x] Duplicate and near-duplicate cluster detection
+- [x] Favorites collections stored locally
+
+P4 - Observability and Debugging (local only)
+- [x] Add diagnostics panel (index version, cache size, last scan, latency)
+- [ ] Add local performance metrics:
+	- indexing throughput (images/min)
+	- search p50/p95 latency
+	- cache hit ratio
+- [ ] Add export diagnostics as local JSON report
+
+Removed/Changed from old plan
+- Removed SQLite-first architecture from core design.
+- Replaced DB-first plan with local file-based manifests and indexes.
+- Kept all optimization and feature planning compatible with offline-only operation.
+
+Discussion Bucket (add/delete later)
+- [ ] Optional plugin system for local AI models (still offline)
+- [ ] Optional encrypted local vault for sensitive folders
+- [ ] Optional LAN-only mode (no internet, local network discovery only)
+- [ ] Optional model swap UI (CLIP variant selection)
+
+Execution Plan (Offline-First)
+Phase 1 (next 1-2 weeks)
+- [x] Offline mode indicator + startup self-check
+- [x] Resume-safe indexing and recovery
+- [x] Local cache/index cleanup UI
+
+Phase 2 (2-3 weeks)
+- [x] Worker pool + adaptive batching
+- [x] Hot index in-memory cache + LRU query cache
+- [x] Filter/sort controls
+
+Phase 3 (2-3 weeks)
+- [x] Similar-image search
+- [x] Multi-select and bulk actions
+- [ ] Diagnostics panel + local metrics export
+
+Success Metrics
+- Re-open already indexed folder: under 1 second
+- Single file add/delete reflect time: under 500 ms target
+- Search latency p95 on 10k images: under 300 ms target
+- Cache hit ratio for repeated queries: above 70%
+- 100% core workflow available with internet disconnected
+
+How to use this file
+- Keep [x] for done tasks and [ ] for pending tasks.
+- Add new ideas only under "Discussion Bucket" first.
+- Move approved ideas into P0-P4 backlog with a checkbox.

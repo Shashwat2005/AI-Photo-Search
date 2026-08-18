@@ -14,18 +14,451 @@
     <h2>AI Photo Search</h2>
 
     <div class="search-bar">
-      <input
-        id="query"
-        type="text"
-        placeholder="Search images..."
-      />
+      <button id="select-folder-btn">Select Folder(s)</button>
 
-      <button id="search-btn">Search</button>
-      <button id="select-folder-btn">Select Folder</button>
+      <div id="app-controls" class="app-controls" style="display: none;">
+        <!-- S10-F1: Search input wrapped for suggestions dropdown -->
+        <div class="search-input-wrapper" id="search-input-wrapper">
+          <input
+            id="query"
+            type="text"
+            placeholder="Search images..."
+            autocomplete="off"
+          />
+          <ul id="search-suggestions" class="search-suggestions" role="listbox" style="display:none;"></ul>
+        </div>
+        <datalist id="search-history"></datalist>
+
+        <button id="search-btn">Search</button>
+        <button id="pin-search-btn" title="Pin this search">Pin</button>
+        <button id="cleanup-btn">Cleanup Data</button>
+        <button id="diagnostics-btn" title="Show Diagnostics">📊 Diagnostics</button>
+        <button id="cleanup-index-btn" title="Cleanup & Compact Index">🧹 Cleanup Index</button>
+        <button id="duplicates-btn" title="Find Duplicate Images">🔀 Duplicates</button>
+        <button id="collections-btn" title="Manage Collections">📚 Collections</button>
+        <button id="analytics-btn" title="Show Analytics (Ctrl+K)">📈 Analytics</button>
+        <button id="palette-btn" title="Command Palette (Ctrl+K)">⌘ Commands</button>
+        <button id="folder-health-btn" title="Folder Health Dashboard">🏥 Folders</button>
+      </div>
+    </div>
+
+    <!-- Pinned Searches -->
+    <div id="pinned-searches-container" class="pinned-searches-container" style="display: none;">
+      <div class="pinned-searches-label">Pinned Searches:</div>
+      <div id="pinned-searches" class="pinned-searches"></div>
+    </div>
+
+    <!-- Filter and Sort Controls -->
+    <button id="toggle-filters-btn" style="display: none;">Hide Filters</button>
+
+    <div id="filters-container" class="filters-container" style="display: none;">
+      <div class="filter-section">
+        <label>Sort By:</label>
+        <select id="sort-select">
+          <option value="relevance">Relevance</option>
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="filename">Filename</option>
+        </select>
+      </div>
+
+      <div class="filter-section">
+        <label>File Type:</label>
+        <select id="file-type-select" multiple>
+          <option value=".jpg" selected>JPG</option>
+          <option value=".jpeg" selected>JPEG</option>
+          <option value=".png" selected>PNG</option>
+          <option value=".webp" selected>WebP</option>
+        </select>
+      </div>
+
+      <div class="filter-section">
+        <label>Min Width (px):</label>
+        <input id="min-width" type="number" placeholder="0" value="0" />
+      </div>
+
+      <div class="filter-section">
+        <label>Min Height (px):</label>
+        <input id="min-height" type="number" placeholder="0" value="0" />
+      </div>
     </div>
 
     <div id="status" class="status"></div>
 
+    <!-- F3: Stale-index banner — shown when new/removed images detected -->
+    <div id="change-banner" class="change-banner" style="display:none;"></div>
+
+    <div id="index-progress" class="index-progress" style="display: none;">
+      <div class="index-progress-track">
+        <div id="index-progress-fill" class="index-progress-fill" style="width: 0%;"></div>
+      </div>
+      <div id="index-progress-text" class="index-progress-text">Preparing indexing...</div>
+    </div>
+
+    <div id="toast" class="toast" style="display: none;"></div>
+
+    <div id="sort-confirm-modal" class="modal" style="display: none;">
+      <div class="modal-content">
+        <h3>Apply Sort</h3>
+        <p>
+          Do you want to apply current search query with this sort,
+          or sort all indexed images without query matching?
+        </p>
+        <div class="modal-actions">
+          <button id="sort-with-query-btn">Sort + Query</button>
+          <button id="sort-only-btn" class="secondary">Sort Only</button>
+          <button id="sort-cancel-btn" class="danger">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="index-queue-panel" class="queue-panel" style="display: none;">
+      <div class="queue-header">
+        <strong>Index Queue</strong>
+        <button id="cancel-index-queue-btn" class="danger">Cancel Queue</button>
+      </div>
+      <div id="index-queue-summary" class="queue-summary"></div>
+      <div id="index-queue-list" class="queue-list"></div>
+    </div>
+
+    <!-- Diagnostics Panel -->
+    <div id="diagnostics-panel" class="diagnostics-panel" style="display: none;">
+      <div class="diagnostics-header">
+        <h3>Index Diagnostics</h3>
+        <button id="close-diagnostics-btn" class="close-btn">×</button>
+      </div>
+      <div id="diagnostics-content" class="diagnostics-content">
+        <p>Loading...</p>
+      </div>
+    </div>
+
+    <!-- Cleanup Panel -->
+    <div id="cleanup-panel" class="cleanup-panel" style="display: none;">
+      <div class="cleanup-header">
+        <h3>🧹 Index Cleanup & Compaction</h3>
+        <button id="close-cleanup-btn" class="close-btn">×</button>
+      </div>
+      <div id="cleanup-content" class="cleanup-content">
+        <div class="cleanup-section">
+          <h4>Index Statistics</h4>
+          <div id="cleanup-stats" class="cleanup-stats">
+            <p>Loading stats...</p>
+          </div>
+        </div>
+        <div class="cleanup-section">
+          <h4>Cleanup Options</h4>
+          <div class="cleanup-actions">
+            <button id="cleanup-run-btn" class="cleanup-action-btn">🚀 Run Cleanup & Compaction</button>
+            <span class="cleanup-info">Removes orphaned embeddings and rebuilds the FAISS index</span>
+          </div>
+        </div>
+        <div id="cleanup-result" class="cleanup-result" style="display: none;">
+          <h4>Results</h4>
+          <pre id="cleanup-result-content"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Duplicates Panel -->
+    <div id="duplicates-panel" class="duplicates-panel" style="display: none;">
+      <div class="duplicates-header">
+        <h3>🔀 Duplicate Images</h3>
+        <div class="duplicates-controls">
+          <label>Similarity: <input id="duplicate-threshold" type="range" min="0.8" max="0.99" step="0.01" value="0.95" style="width: 100px;"/> <span id="threshold-value">0.95</span></label>
+          <button id="refresh-duplicates-btn">🔍 Find Duplicates</button>
+        </div>
+        <button id="close-duplicates-btn" class="close-btn">×</button>
+      </div>
+      <div id="duplicates-content" class="duplicates-content">
+        <p>Loading duplicates...</p>
+      </div>
+    </div>
+
+    <!-- Collections Panel -->
+    <div id="collections-panel" class="collections-panel" style="display: none;">
+      <div class="collections-header">
+        <h3>📚 Collections</h3>
+        <div class="collections-controls">
+          <input id="new-collection-input" type="text" placeholder="New collection name..." style="width: 150px; padding: 6px;" />
+          <button id="create-collection-btn">Create</button>
+        </div>
+        <button id="close-collections-btn" class="close-btn">×</button>
+      </div>
+      <div id="collections-content" class="collections-content">
+        <p>Loading collections...</p>
+      </div>
+    </div>
+
+    <!-- Filename Search Modal -->
+    <div id="filename-search-modal" class="modal" style="display: none;">
+      <div class="modal-content">
+        <h3>Search by Filename</h3>
+        <p>Enter a filename to search for (supports partial matching):</p>
+        <input id="filename-search-input" type="text" placeholder="e.g., photo or image.jpg" style="width: 100%; padding: 8px; margin: 12px 0; border: 1px solid #ccc; border-radius: 4px;" />
+        <div class="modal-actions">
+          <button id="filename-search-btn" class="primary">Search</button>
+          <button id="filename-cancel-btn" class="secondary">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analytics Panel (S7: upgraded to rich panel) -->
+    <div id="analytics-panel" class="analytics-panel" style="display: none;">
+      <div class="analytics-header">
+        <h3>📈 Photo Analytics</h3>
+        <button id="close-analytics-btn" class="close-btn">×</button>
+      </div>
+      <div id="analytics-panel-content" class="analytics-panel-content">
+        <p>Loading analytics…</p>
+      </div>
+    </div>
+
+    <!-- Skeleton Screen -->
+    <div id="skeleton-screen" class="skeleton-screen" style="display: flex;">
+      <div class="skeleton-overlay"></div>
+      <div class="skeleton-container">
+        <div class="skeleton-logo"></div>
+        <div class="skeleton-text">Loading AI Photo Search...</div>
+        <div class="skeleton-progress">
+          <div class="skeleton-progress-bar"></div>
+        </div>
+        <div class="skeleton-cards">
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="results-header" class="results-header" style="display:none;">
+      <span id="results-count-label" class="results-count-label"></span>
+      <button id="timeline-toggle-btn" class="timeline-toggle-btn" title="Toggle Timeline / Grid view">📅 Timeline</button>
+    </div>
     <div id="results" class="grid"></div>
+
+    <!-- Bulk Actions Bar -->
+    <div id="bulk-actions-bar" class="bulk-actions-bar">
+      <span class="count"><span id="selected-count">0</span> selected</span>
+      <button id="open-selected-btn">Open All</button>
+      <button id="copy-paths-btn">Copy Paths</button>
+      <button id="deselect-all-btn">Deselect All</button>
+      <button id="export-metadata-btn" class="export-metadata-btn" title="Export metadata CSV for selected images">📄 Export CSV</button>
+      <button id="rename-selected-btn" class="rename-selected-btn" title="Batch rename selected images">✏️ Rename</button>
+      <button id="compare-selected-btn" class="compare-selected-btn" style="display:none;" title="Compare 2 images side by side">▧ Compare</button>
+    </div>
+
+    <!-- S6-F3: Persistent status bar -->
+    <div id="status-bar" class="status-bar" style="display:none;">
+      <span id="sb-photos">📸 –</span>
+      <span class="sb-sep">·</span>
+      <span id="sb-folders">– folders</span>
+      <span class="sb-sep">·</span>
+      <span id="sb-last-indexed">–</span>
+      <!-- S8-F3: Auto-scan badge -->
+      <span id="sb-scan-badge" class="sb-scan-badge" style="display:none;"></span>
+      <button id="sb-diag-btn" class="sb-diag-btn" title="View diagnostics">⚙</button>
+      <button id="sb-shortcuts-btn" class="sb-shortcuts-btn" title="Keyboard shortcuts (?)">?</button>
+    </div>
   </body>
+
+  <!-- F1: Lightbox — full-screen in-app image viewer -->
+  <div id="lightbox-overlay" class="lightbox-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Image viewer">
+    <button class="lightbox-close" id="lightbox-close" title="Close (Esc)">&#x2715;</button>
+
+    <button class="lightbox-nav lightbox-prev" id="lightbox-prev" title="Previous (←)">&#x2039;</button>
+    <button class="lightbox-nav lightbox-next" id="lightbox-next" title="Next (→)">&#x203A;</button>
+
+    <div class="lightbox-body">
+      <img id="lightbox-img" class="lightbox-img" src="" alt="Full size image" />
+      <!-- S9-F3: Tag editor panel (initially hidden) -->
+      <div id="tag-editor-panel" class="tag-editor-panel" style="display:none;">
+        <div class="tag-editor-header">
+          <span>🏷 Tags</span>
+          <button id="tag-editor-close" class="tag-editor-close">×</button>
+        </div>
+        <div id="tag-chips-row" class="tag-chips-row"></div>
+        <div class="tag-input-row">
+          <input id="tag-input" class="tag-input" type="text" placeholder="Add tag…" autocomplete="off" />
+          <button id="tag-add-btn" class="tag-add-btn">+</button>
+        </div>
+        <div id="tag-suggestions-row" class="tag-suggestions-row"></div>
+      </div>
+    </div>
+
+    <div class="lightbox-footer">
+      <div class="lightbox-meta" id="lightbox-meta"></div>
+      <div class="lightbox-actions">
+        <button id="lightbox-open-btn" title="Open in system viewer">&#x1F5C2; Open</button>
+        <button id="lightbox-similar-btn" title="Find visually similar images">&#x1F50D; Similar</button>
+        <button id="lightbox-collection-btn" title="Add to a collection">&#x1F4DA; Collect</button>
+        <button id="lightbox-tag-btn" class="lightbox-tag-btn" title="Edit tags for this image">🏷 Tag</button>
+        <button id="lightbox-note-btn" class="lightbox-note-btn" title="Add / view note for this image">📝 Note</button>
+        <!-- S9-F1: Slideshow controls -->
+        <div class="slideshow-controls">
+          <button id="slideshow-play-btn" class="slideshow-play-btn" title="Start slideshow">▶</button>
+          <select id="slideshow-speed" class="slideshow-speed" title="Slideshow interval">
+            <option value="2000">2s</option>
+            <option value="4000" selected>4s</option>
+            <option value="8000">8s</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- F1: Drop overlay — shown when user drags files over the window -->
+  <div id="drop-overlay" class="drop-overlay" style="display:none;" aria-hidden="true">
+    <div class="drop-overlay-inner">
+      <div class="drop-icon">📂</div>
+      <div class="drop-title">Drop here</div>
+      <div class="drop-hint">Folder → Index &nbsp;|&nbsp; Image → Search Similar</div>
+    </div>
+  </div>
+
+  <!-- S7-F1: Command Palette -->
+  <div id="cmd-palette-overlay" class="cmd-palette-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="cmd-palette" id="cmd-palette">
+      <div class="cmd-palette-header">
+        <span class="cmd-palette-icon">⌘</span>
+        <input id="cmd-palette-input" class="cmd-palette-input" type="text" placeholder="Type a command…" autocomplete="off" spellcheck="false" />
+        <kbd class="cmd-palette-esc">Esc</kbd>
+      </div>
+      <ul id="cmd-palette-list" class="cmd-palette-list" role="listbox"></ul>
+    </div>
+  </div>
+
+  <!-- S8-F1: Batch Rename Modal -->
+  <div id="rename-modal-overlay" class="rename-modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Batch rename">
+    <div class="rename-modal">
+      <div class="rename-modal-header">
+        <h3>✏️ Batch Rename</h3>
+        <button id="rename-modal-close" class="close-btn">×</button>
+      </div>
+      <div class="rename-modal-body">
+        <label class="rename-label">Pattern</label>
+        <div class="rename-pattern-row">
+          <input id="rename-pattern-input" class="rename-pattern-input" type="text" value="{original}" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="rename-token-chips">
+          <span class="rename-chip" data-token="{original}">{original}</span>
+          <span class="rename-chip" data-token="{date}">{date}</span>
+          <span class="rename-chip" data-token="{year}">{year}</span>
+          <span class="rename-chip" data-token="{month}">{month}</span>
+          <span class="rename-chip" data-token="{day}">{day}</span>
+          <span class="rename-chip" data-token="{index:3}">{index:3}</span>
+          <span class="rename-chip" data-token="{ext}">{ext}</span>
+        </div>
+        <div class="rename-hint">Click a token to insert it. Extension is appended automatically if <code>{ext}</code> is omitted.</div>
+        <label class="rename-label">Preview <span id="rename-preview-note" class="rename-preview-note"></span></label>
+        <ul id="rename-preview-list" class="rename-preview-list"></ul>
+      </div>
+      <div class="rename-modal-footer">
+        <button id="rename-cancel-btn" class="secondary">Cancel</button>
+        <button id="rename-confirm-btn" class="primary">Rename Files</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- S8-F2: Keyboard Shortcuts Overlay -->
+  <div id="shortcuts-overlay" class="shortcuts-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+    <div class="shortcuts-panel">
+      <div class="shortcuts-header">
+        <h3>⌨️ Keyboard Shortcuts</h3>
+        <button id="close-shortcuts-btn" class="close-btn">×</button>
+      </div>
+      <div class="shortcuts-body">
+        <div class="shortcuts-col">
+          <div class="shortcuts-group">
+            <div class="shortcuts-group-title">Search</div>
+            <div class="shortcut-row"><kbd>/</kbd><span>Focus search box</span></div>
+            <div class="shortcut-row"><kbd>Enter</kbd><span>Run search</span></div>
+            <div class="shortcut-row"><kbd>Ctrl</kbd>+<kbd>K</kbd><span>Command palette</span></div>
+          </div>
+          <div class="shortcuts-group">
+            <div class="shortcuts-group-title">Selection</div>
+            <div class="shortcut-row"><kbd>Ctrl</kbd>+<kbd>A</kbd><span>Select all</span></div>
+            <div class="shortcut-row"><kbd>Esc</kbd><span>Deselect / close panel</span></div>
+          </div>
+          <div class="shortcuts-group">
+            <div class="shortcuts-group-title">Grid</div>
+            <div class="shortcut-row"><kbd>📅</kbd><span>Timeline / Grid toggle</span></div>
+          </div>
+        </div>
+        <div class="shortcuts-col">
+          <div class="shortcuts-group">
+            <div class="shortcuts-group-title">Lightbox</div>
+            <div class="shortcut-row"><kbd>←</kbd><kbd>→</kbd><span>Previous / Next</span></div>
+            <div class="shortcut-row"><kbd>Esc</kbd><span>Close lightbox</span></div>
+            <div class="shortcut-row"><kbd>O</kbd><span>Open in system viewer</span></div>
+          </div>
+          <div class="shortcuts-group">
+            <div class="shortcuts-group-title">Panels</div>
+            <div class="shortcut-row"><kbd>?</kbd><span>Show this cheatsheet</span></div>
+            <div class="shortcut-row"><kbd>Esc</kbd><span>Close topmost panel</span></div>
+          </div>
+          <div class="shortcuts-group">
+            <div class="shortcuts-group-title">Drag &amp; Drop</div>
+            <div class="shortcut-row"><span class="drop-hint-chip">📁 Folder</span><span>Index folder</span></div>
+            <div class="shortcut-row"><span class="drop-hint-chip">🖼 Image</span><span>Search similar</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S9-F2: Side-by-Side Comparison Modal -->
+  <div id="compare-modal" class="compare-modal" style="display:none;" role="dialog" aria-modal="true" aria-label="Compare images">
+    <div class="compare-header">
+      <span class="compare-title">&#x25A7; Compare</span>
+      <button id="compare-modal-close" class="close-btn">&times;</button>
+    </div>
+    <div class="compare-body">
+      <div class="compare-panel" id="compare-panel-a">
+        <div class="compare-img-wrap">
+          <img id="compare-img-a" class="compare-img" src="" alt="Image A" />
+        </div>
+        <div class="compare-label" id="compare-label-a"></div>
+      </div>
+      <div class="compare-divider"></div>
+      <div class="compare-panel" id="compare-panel-b">
+        <div class="compare-img-wrap">
+          <img id="compare-img-b" class="compare-img" src="" alt="Image B" />
+        </div>
+        <div class="compare-label" id="compare-label-b"></div>
+      </div>
+    </div>
+    <div class="compare-footer">
+      <span class="compare-zoom-hint">Scroll to zoom &nbsp;·&nbsp; Drag to pan</span>
+    </div>
+  </div>
+
+  <!-- S10-F2: Note editor panel (inside lightbox body, slide-up like tag editor) -->
+  <div id="note-editor-panel" class="note-editor-panel" style="display:none;">
+    <div class="note-editor-header">
+      <span>📝 Note</span>
+      <button id="note-editor-close" class="tag-editor-close">&times;</button>
+    </div>
+    <textarea id="note-textarea" class="note-textarea" placeholder="Write a note about this image…" rows="3"></textarea>
+    <div class="note-editor-footer">
+      <span id="note-char-count" class="note-char-count">0 / 500</span>
+      <button id="note-save-btn" class="note-save-btn">Save Note</button>
+    </div>
+  </div>
+
+  <!-- S10-F3: Folder Health Dashboard Modal -->
+  <div id="folder-health-modal" class="folder-health-modal" style="display:none;" role="dialog" aria-modal="true" aria-label="Folder Health Dashboard">
+    <div class="folder-health-panel">
+      <div class="folder-health-header">
+        <h3>🏥 Folder Health</h3>
+        <button id="folder-health-close" class="close-btn">&times;</button>
+      </div>
+      <div id="folder-health-body" class="folder-health-body">
+        <div class="folder-health-loading">Loading…</div>
+      </div>
+    </div>
+  </div>
+
 </html>
