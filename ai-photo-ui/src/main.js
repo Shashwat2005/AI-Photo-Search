@@ -1244,7 +1244,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
     } catch (_) { /* listen not available — graceful degradation */ }
 
-    const readyFolders = [];
+    // Seed readyFolders with folders that are already indexed but NOT in the
+    // current indexing queue — this preserves previously-selected folders when
+    // the user indexes an additional folder without re-indexing everything.
+    const foldersInQueue = new Set(folders);
+    const readyFolders = selectedFolders.filter(f => !foldersInQueue.has(f));
+
     let skipped = 0;
     let indexedNow = 0;
     let totalAdded = 0;
@@ -2335,7 +2340,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // F4: Debounced search-as-you-type (400ms)
   // Only triggers when a folder is indexed and query has ≥2 chars.
+  // Suppressed when the value is set programmatically (e.g. by _applySuggestion).
+  let _suppressDebouncedSearch = false;
   const _debouncedSearch = debounce(async () => {
+    if (_suppressDebouncedSearch) return;
     if (selectedFolders.length === 0) return;
     const q = queryInput.value.trim();
     if (q.length < 2) return;
@@ -3539,15 +3547,29 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function _applySuggestion(text) {
+    // Suppress the debounced search-as-you-type — the suggestion sets the value
+    // programmatically; we'll fire an explicit search ourselves below.
+    _suppressDebouncedSearch = true;
     queryInput.value = text;
+    // Re-enable after the current event loop tick so the 'input' event handler
+    // and the debounce timer both see the flag before it clears.
+    setTimeout(() => { _suppressDebouncedSearch = false; }, 0);
+
     hideSuggestions();
     queryInput.focus();
+
     // Save to recent
     try {
       let recent = JSON.parse(localStorage.getItem("recentQueries") || "[]");
       recent = [text, ...recent.filter(r => r !== text)].slice(0, 20);
       localStorage.setItem("recentQueries", JSON.stringify(recent));
     } catch (_) {}
+
+    // Trigger a real search immediately (not via debounce)
+    if (selectedFolders.length > 0 && text.trim().length >= 1) {
+      sortSearchMode = "query";
+      search({ useQuery: true });
+    }
   }
 
   if (queryInput) {
