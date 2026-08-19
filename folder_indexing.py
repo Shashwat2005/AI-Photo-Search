@@ -139,8 +139,10 @@ def _put_index_and_metadata_in_cache(index_dir: Path, index, metadata: list):
 
 
 def _get_cached_query_embedding(query: str):
-    """Get normalized query embedding from cache, or None."""
-    normalized = " ".join(query.lower().split())
+    """Get normalized query embedding from cache, or None.
+    Key is the exact query string (whitespace-normalized, original casing).
+    """
+    normalized = " ".join(query.strip().split())
     with _QUERY_EMBEDDING_CACHE_LOCK:
         if normalized in _QUERY_EMBEDDING_CACHE:
             _QUERY_EMBEDDING_CACHE.move_to_end(normalized)
@@ -150,7 +152,7 @@ def _get_cached_query_embedding(query: str):
 
 def _put_query_embedding_in_cache(query: str, embedding: np.ndarray):
     """Store normalized query embedding in LRU cache."""
-    normalized = " ".join(query.lower().split())
+    normalized = " ".join(query.strip().split())
     with _QUERY_EMBEDDING_CACHE_LOCK:
         if normalized in _QUERY_EMBEDDING_CACHE:
             _QUERY_EMBEDDING_CACHE.pop(normalized)
@@ -791,11 +793,17 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
         raise RuntimeError("Folder not indexed yet")
 
     top_k = max(1, int(top_k))
-    normalized_query = " ".join(query.lower().split())
+    # Preserve original casing — CLIP is trained on natural-language captions
+    # and is sensitive to case. Only normalize whitespace.
+    normalized_query = " ".join(query.strip().split())
     threshold = None if min_score is None else float(min_score)
 
     index_sig = _index_signature(index_file, metadata_file)
-    cache_key = f"q={normalized_query}|k={top_k}|s={threshold}|f={json.dumps(filters or {})}|o={sort_by}"
+    # Prefix cache key with index_dir so the shared in-memory cache is
+    # scoped per-folder. Without this, Folder A's cached results are
+    # incorrectly returned for identical queries in Folder B.
+    folder_prefix = str(index_dir)
+    cache_key = f"{folder_prefix}|q={normalized_query}|k={top_k}|s={threshold}|f={json.dumps(filters or {})}|o={sort_by}"
 
     # 1. Check in-memory query result cache (fastest - no disk I/O)
     cached_result = _get_cached_query_result(cache_key)
@@ -820,14 +828,15 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
         metadata = json.loads(metadata_file.read_text())
         _put_index_and_metadata_in_cache(index_dir, index, metadata)
 
-    # 4. Get or compute query embedding (cached)
+    # 4. Get or compute query embedding (cached by text only — text embeddings
+    #    are folder-independent; only the result cache is folder-scoped).
     query_emb = _get_cached_query_embedding(normalized_query)
     if query_emb is None:
         query_emb = get_model().encode(normalized_query, convert_to_numpy=True).astype("float32")
         faiss.normalize_L2(query_emb.reshape(1, -1))
         _put_query_embedding_in_cache(normalized_query, query_emb)
     else:
-        # Already normalized from cache
+        # Already normalized from cache — just reshape for FAISS
         query_emb = query_emb.reshape(1, -1)
 
     # 5. FAISS search — overfetch only when filters are active so we have

@@ -50,7 +50,9 @@ fn search_cache_key(
     sort_by: Option<&str>,
     top_k: Option<u32>,
 ) -> String {
-    let normalized_query = query.trim().to_lowercase();
+    // Preserve query casing — Python's CLIP encoder is case-sensitive.
+    // Lowercasing here was causing Rust cache keys to mismatch Python cache keys.
+    let normalized_query = query.trim().to_string();
     let normalized_filters = filters.unwrap_or("{}").trim();
     let normalized_sort = sort_by.unwrap_or("relevance").trim().to_lowercase();
     let normalized_top_k = top_k.unwrap_or(5);

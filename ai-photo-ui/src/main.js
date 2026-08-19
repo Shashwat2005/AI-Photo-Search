@@ -1422,6 +1422,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
       if (restoredFolders.length > 0) {
         selectedFolders = restoredFolders;
+        searchCache.clear(); // always start a fresh session with a clean cache
         setPostIndexUIVisible(true);
         statusEl.textContent = `✓ Restored ${restoredFolders.length} folder(s) from last session. Ready to search.`;
 
@@ -1625,6 +1626,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           showToast(`📂 Indexing ${folders.length} dropped folder${folders.length > 1 ? "s" : ""}…`);
           selectedFolders = Array.from(new Set([...selectedFolders, ...folders]));
           saveSelectedFolders();
+          searchCache.clear(); // folder set changed — stale cached results must not be served
           setIndexingState(true);
           runIndexQueue(folders);
         } else if (imageFiles.length > 0) {
@@ -2338,19 +2340,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     await search({ useQuery: true });
   });
 
-  // F4: Debounced search-as-you-type (400ms)
-  // Only triggers when a folder is indexed and query has ≥2 chars.
-  // Suppressed when the value is set programmatically (e.g. by _applySuggestion).
-  let _suppressDebouncedSearch = false;
-  const _debouncedSearch = debounce(async () => {
-    if (_suppressDebouncedSearch) return;
-    if (selectedFolders.length === 0) return;
-    const q = queryInput.value.trim();
-    if (q.length < 2) return;
-    sortSearchMode = "query";
-    await search({ useQuery: true });
-  }, 400);
-  queryInput.addEventListener("input", _debouncedSearch);
+  // Search on Enter key inside the query input (when suggestions dropdown is closed)
+  // The S10 suggestions keydown handler takes priority when the dropdown is open.
+  queryInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      // Only run search if the suggestions dropdown isn't handling this Enter
+      // (suggestions keydown fires first and calls e.preventDefault() when active)
+      sortSearchMode = "query";
+      search({ useQuery: true });
+    }
+  });
 
   selectBtn.addEventListener("click", selectFolder);
     cancelIndexQueueBtn.addEventListener("click", () => {
@@ -3547,14 +3546,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function _applySuggestion(text) {
-    // Suppress the debounced search-as-you-type — the suggestion sets the value
-    // programmatically; we'll fire an explicit search ourselves below.
-    _suppressDebouncedSearch = true;
     queryInput.value = text;
-    // Re-enable after the current event loop tick so the 'input' event handler
-    // and the debounce timer both see the flag before it clears.
-    setTimeout(() => { _suppressDebouncedSearch = false; }, 0);
-
     hideSuggestions();
     queryInput.focus();
 
@@ -3565,7 +3557,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       localStorage.setItem("recentQueries", JSON.stringify(recent));
     } catch (_) {}
 
-    // Trigger a real search immediately (not via debounce)
+    // Trigger a real search immediately on suggestion select
     if (selectedFolders.length > 0 && text.trim().length >= 1) {
       sortSearchMode = "query";
       search({ useQuery: true });
@@ -3574,6 +3566,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (queryInput) {
     queryInput.addEventListener("input", () => {
+      // Only update the suggestions dropdown — no backend search
       const q = queryInput.value.trim();
       const items = _buildSuggestions(q);
       _renderSuggestions(items);
@@ -3594,7 +3587,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         e.preventDefault();
         _highlightSugg(Math.max(_suggActiveIdx - 1, -1));
       } else if (e.key === "Enter" && _suggActiveIdx >= 0) {
+        // A suggestion is highlighted — select it and search
         e.preventDefault();
+        e.stopImmediatePropagation(); // prevent the outer Enter-to-search from double-firing
         _applySuggestion(_suggItems[_suggActiveIdx].text);
       } else if (e.key === "Escape") {
         hideSuggestions();

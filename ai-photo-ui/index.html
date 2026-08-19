@@ -32,7 +32,6 @@
         <button id="search-btn">Search</button>
         <button id="pin-search-btn" title="Pin this search">Pin</button>
         <button id="cleanup-btn">Cleanup Data</button>
-        <button id="diagnostics-btn" title="Show Diagnostics">📊 Diagnostics</button>
         <button id="cleanup-index-btn" title="Cleanup & Compact Index">🧹 Cleanup Index</button>
         <button id="duplicates-btn" title="Find Duplicate Images">🔀 Duplicates</button>
         <button id="collections-btn" title="Manage Collections">📚 Collections</button>
@@ -121,16 +120,6 @@
       <div id="index-queue-list" class="queue-list"></div>
     </div>
 
-    <!-- Diagnostics Panel -->
-    <div id="diagnostics-panel" class="diagnostics-panel" style="display: none;">
-      <div class="diagnostics-header">
-        <h3>Index Diagnostics</h3>
-        <button id="close-diagnostics-btn" class="close-btn">×</button>
-      </div>
-      <div id="diagnostics-content" class="diagnostics-content">
-        <p>Loading...</p>
-      </div>
-    </div>
 
     <!-- Cleanup Panel -->
     <div id="cleanup-panel" class="cleanup-panel" style="display: none;">
@@ -259,7 +248,7 @@
       <span id="sb-last-indexed">–</span>
       <!-- S8-F3: Auto-scan badge -->
       <span id="sb-scan-badge" class="sb-scan-badge" style="display:none;"></span>
-      <button id="sb-diag-btn" class="sb-diag-btn" title="View diagnostics">⚙</button>
+      <button id="sb-diag-btn" class="sb-diag-btn" title="View Analytics">⚙</button>
       <button id="sb-shortcuts-btn" class="sb-shortcuts-btn" title="Keyboard shortcuts (?)">?</button>
     </div>
   </body>
