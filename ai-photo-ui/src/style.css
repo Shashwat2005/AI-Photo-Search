@@ -1968,6 +1968,56 @@ body { padding-bottom: 32px; }
   margin-top: 2px;
 }
 
+/* ── Per-folder analytics cards ── */
+.analytics-folder-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.analytics-folder-card {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.analytics-folder-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.9);
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.analytics-folder-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px 10px;
+}
+.afc-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.afc-cell.afc-wide {
+  grid-column: 1 / -1;
+}
+.afc-label {
+  font-size: 10px;
+  color: rgba(255,255,255,0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.afc-value {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255,255,255,0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Export CSV button in bulk actions bar */
 .export-metadata-btn {
   background: rgba(99,179,237,0.12);

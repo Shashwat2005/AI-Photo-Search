@@ -115,11 +115,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const indexQueueList = document.getElementById("index-queue-list");
   const cancelIndexQueueBtn = document.getElementById("cancel-index-queue-btn");
   
-    // Diagnostics elements
-    const diagnosticsBtn = document.getElementById("diagnostics-btn");
-    const diagnosticsPanel = document.getElementById("diagnostics-panel");
-    const closeDiagnosticsBtn = document.getElementById("close-diagnostics-btn");
-    const diagnosticsContent = document.getElementById("diagnostics-content");
 
     // Cleanup panel elements
     const cleanupIndexBtn = document.getElementById("cleanup-index-btn");
@@ -249,77 +244,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       folderStats: {}
     };
   
-    /* ------------------ DIAGNOSTICS ------------------ */
-    async function showDiagnostics() {
-        if (selectedFolders.length === 0) {
-        alert("Please select a folder first");
-        return;
-      }
-
-        if (selectedFolders.length > 1) {
-          alert("Diagnostics are available for one folder at a time. Please select a single folder.");
-          return;
-        }
-
-        const indexedFolder = selectedFolders[0];
-  
-      diagnosticsPanel.style.display = "flex";
-      diagnosticsContent.innerHTML = "<p>Loading diagnostics...</p>";
-  
-      try {
-        const data = await invoke("engine_diagnostics", {
-          folder: indexedFolder
-        });
-  
-        console.log("Diagnostics:", data);
-  
-        let html = '';
-      
-        if (data.error) {
-          html = `<p style="color: #d32f2f;">Error: ${data.error}</p>`;
-        } else {
-          html = `
-            <div class="diagnostics-row">
-              <strong>Indexed:</strong>
-              <span>${data.indexed ? 'Yes' : 'No'}</span>
-            </div>
-            <div class="diagnostics-row">
-              <strong>Total Images:</strong>
-              <span>${data.total_images}</span>
-            </div>
-            <div class="diagnostics-row">
-              <strong>Index Size:</strong>
-              <span>${data.index_size_mb.toFixed(2)} MB</span>
-            </div>
-            <div class="diagnostics-row">
-              <strong>Embeddings:</strong>
-              <span>${data.embeddings_size_mb.toFixed(2)} MB</span>
-            </div>
-            <div class="diagnostics-row">
-              <strong>Thumbnails:</strong>
-              <span>${data.thumbnail_count}</span>
-            </div>
-            <div class="diagnostics-row">
-              <strong>Last Indexed:</strong>
-              <span>${data.last_indexed ? new Date(data.last_indexed * 1000).toLocaleString() : 'Never'}</span>
-            </div>
-            <div class="diagnostics-row">
-              <strong>Folder:</strong>
-              <span style="font-size: 12px;">${data.folder}</span>
-            </div>
-          `;
-        }
-      
-        diagnosticsContent.innerHTML = html;
-      } catch (err) {
-        console.error("Failed to load diagnostics:", err);
-        diagnosticsContent.innerHTML = `<p style="color: #d32f2f;">Failed to load diagnostics: ${String(err)}</p>`;
-      }
-    }
-  
-    function closeDiagnostics() {
-      diagnosticsPanel.style.display = "none";
-    }
 
     /* --------------- CLEANUP PANEL MANAGEMENT --------------- */
     async function showCleanupPanel() {
@@ -443,69 +367,85 @@ document.addEventListener("DOMContentLoaded", async () => {
         alert("Please select a folder first");
         return;
       }
-
-      if (selectedFolders.length > 1) {
-        alert("Duplicate detection is available for one folder at a time. Please select a single folder.");
-        return;
-      }
-
       await loadDuplicates();
     }
 
     async function loadDuplicates() {
-      const indexedFolder = selectedFolders[0];
       const threshold = parseFloat(duplicateThresholdInput.value);
 
       duplicatesPanel.style.display = "flex";
-      duplicatesContent.innerHTML = "<p>Analyzing images for duplicates...</p>";
+      const folderLabel = selectedFolders.length === 1
+        ? selectedFolders[0].split(/[\\/]/).pop()
+        : `${selectedFolders.length} folders`;
+      duplicatesContent.innerHTML = `<p>Analyzing ${escapeHtml(folderLabel)} for duplicates…</p>`;
 
       try {
-        const data = await invoke("engine_duplicates", {
-          folder: indexedFolder,
-          threshold: threshold
-        });
+        // Run duplicate detection on all selected folders in parallel
+        const perFolderResults = await Promise.all(
+          selectedFolders.map(async (folder) => {
+            try {
+              const data = await invoke("engine_duplicates", { folder, threshold });
+              if (data.error) return { folder, groups: [], error: data.error };
+              // Tag every item in every group with its source folder
+              const groups = (data.groups || []).map(group =>
+                group.map(item => ({ ...item, _folder: folder }))
+              );
+              return {
+                folder,
+                groups,
+                total_images: data.total_images || 0,
+                group_count: data.group_count || 0,
+                duplicate_count: data.duplicate_count || 0,
+              };
+            } catch (err) {
+              return { folder, groups: [], error: String(err) };
+            }
+          })
+        );
 
-        console.log("Duplicates:", data);
+        // Merge all groups from all folders
+        const allGroups = perFolderResults.flatMap(r => r.groups);
+        const totalImages = perFolderResults.reduce((s, r) => s + (r.total_images || 0), 0);
+        const totalGroupCount = allGroups.length;
+        const totalDuplicates = allGroups.reduce((s, g) => s + Math.max(0, g.length - 1), 0);
+        const errors = perFolderResults.filter(r => r.error).map(r =>
+          `${r.folder.split(/[\\/]/).pop()}: ${r.error}`);
 
-        if (data.error) {
-          duplicatesContent.innerHTML = `<p style="color: #d32f2f;">Error: ${data.error}</p>`;
-          return;
-        }
+        currentDuplicateGroups = allGroups;
 
-        if (!data.groups || data.groups.length === 0) {
+        if (allGroups.length === 0) {
+          const errNote = errors.length > 0
+            ? `<p style="color:#f87171;font-size:12px;">Errors: ${errors.map(escapeHtml).join(', ')}</p>` : '';
           duplicatesContent.innerHTML = `
             <div class="duplicates-summary">
-              <p>✓ No duplicate images found!</p>
-              <p>Analyzed ${data.total_images} images with ${(threshold * 100).toFixed(0)}% similarity threshold.</p>
-            </div>
-          `;
+              <p>✅ No duplicate images found across ${selectedFolders.length} folder(s)!</p>
+              <p>Analyzed ${totalImages} images at ${(threshold * 100).toFixed(0)}% similarity.</p>
+              ${errNote}
+            </div>`;
           return;
         }
 
         let html = `
           <div class="duplicates-summary">
-            <p><strong>${data.group_count}</strong> duplicate groups found</p>
-            <p><strong>${data.duplicate_count}</strong> total duplicate images</p>
+            <p><strong>${totalGroupCount}</strong> duplicate group(s) across ${selectedFolders.length} folder(s)</p>
+            <p><strong>${totalDuplicates}</strong> redundant image(s) from ${totalImages} total</p>
             <p>Threshold: ${(threshold * 100).toFixed(0)}% similarity</p>
-          </div>
-        `;
+            ${errors.length > 0 ? `<p style="color:#f87171;font-size:12px;">Skipped: ${errors.map(escapeHtml).join(', ')}</p>` : ''}
+          </div>`;
 
-        // Store groups for deletion reference
-        currentDuplicateGroups = data.groups;
-
-        // Display each duplicate group
-        for (let groupIdx = 0; groupIdx < data.groups.length; groupIdx++) {
-          const group = data.groups[groupIdx];
+        for (let groupIdx = 0; groupIdx < allGroups.length; groupIdx++) {
+          const group = allGroups[groupIdx];
+          // Group folder label (all items in a group share the same _folder)
+          const groupFolder = group[0]?._folder?.split(/[\\/]/).pop() || '';
           html += `
             <div class="duplicate-group">
               <div class="duplicate-group-header">
-                <span>Group ${groupIdx + 1} (${group.length} images)</span>
+                <span>Group ${groupIdx + 1} — ${group.length} images${selectedFolders.length > 1 ? ` · ${escapeHtml(groupFolder)}` : ''}</span>
                 <div class="duplicate-group-actions">
                   <button class="delete-duplicate-group-btn" data-group-idx="${groupIdx}">Delete Others</button>
                 </div>
               </div>
-              <div class="duplicate-group-images">
-          `;
+              <div class="duplicate-group-images">`;
 
           for (let i = 0; i < group.length; i++) {
             const item = group[i];
@@ -514,19 +454,14 @@ document.addEventListener("DOMContentLoaded", async () => {
             const label = escapeHtml(`${basename(item.path || '')}${isNewest ? ' (Newest)' : ''}`);
             const safePath = escapeHtml(item.path || '');
             const thumbSrc = escapeHtml(toAssetUrl(item.thumbnail || item.path || ''));
-
             html += `
               <div class="${className}" title="${safePath}">
                 <img src="${thumbSrc}" alt="duplicate" loading="lazy"/>
                 <div class="duplicate-item-label">${i + 1}. ${label}</div>
-              </div>
-            `;
+              </div>`;
           }
 
-          html += `
-              </div>
-            </div>
-          `;
+          html += `</div></div>`;
         }
 
         duplicatesContent.innerHTML = html;
@@ -547,7 +482,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
-      // Keep first item (newest), delete the rest
       const keepItem = group[0];
       const deleteItems = group.slice(1);
       const keepName = basename(keepItem.path || keepItem);
@@ -558,7 +492,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       );
       if (!confirmed) return;
 
-      const indexedFolder = selectedFolders[0];
+      // Each item carries _folder from loadDuplicates — use it for the re-index call
+      const folderForGroup = group[0]._folder || selectedFolders[0];
       let deletedCount = 0;
       const errors = [];
 
@@ -572,8 +507,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
       }
 
-      // Fast partial re-index — rebuilds FAISS from cached .npy files
-      // without re-running CLIP (~1-2s vs 30-60s for a full re-encode).
       try {
         statusEl.textContent = "Updating index…";
         const deletedPaths = deleteItems
@@ -581,13 +514,13 @@ document.addEventListener("DOMContentLoaded", async () => {
           .map(item => item.path || item);
         if (deletedPaths.length > 0) {
           await invoke("engine_remove_from_index", {
-            folder: indexedFolder,
+            folder: folderForGroup,
             paths: deletedPaths,
           });
         }
         searchCache.clear();
       } catch (err) {
-        console.warn("Fast re-index after deletion failed, search results may be stale:", err);
+        console.warn("Fast re-index after deletion failed:", err);
       }
 
       if (errors.length > 0) {
@@ -839,101 +772,161 @@ document.addEventListener("DOMContentLoaded", async () => {
         alert("Please select a folder first");
         return;
       }
-
       analyticsPanel.style.display = "flex";
-      analyticsContent.innerHTML = "<p>Loading analytics...</p>";
+      analyticsPanelContent.innerHTML = `<p style="color:rgba(255,255,255,0.4)">Loading analytics…</p>`;
 
       try {
-        let totalImages = 0;
-        let totalDiskSize = 0;
-        const folderDetails = [];
+        // Fetch both deep analytics + index diagnostics for every folder in parallel
+        const perFolder = await Promise.all(
+          selectedFolders.map(async (folder) => {
+            const [analytics, diag] = await Promise.all([
+              invoke("get_folder_analytics", { folder }).catch(() => ({})),
+              invoke("engine_diagnostics",  { folder }).catch(() => ({})),
+            ]);
+            return { folder, analytics, diag };
+          })
+        );
 
-        for (const folder of selectedFolders) {
-          try {
-            const diagnostics = await invoke("engine_diagnostics", {
-              folder: folder
-            });
+        // ---- Aggregate totals ----
+        let grandTotal = 0, grandSizeBytes = 0, grandIndexMb = 0, grandEmbMb = 0;
+        const extMap = {};   // ext -> total count across all folders
+        const yearMap = {};  // year -> total count across all folders
+        let globalLargest = null, globalSmallest = null;
 
-            totalImages += diagnostics.total_images || 0;
-            totalDiskSize += (diagnostics.index_size_mb || 0) + (diagnostics.embeddings_size_mb || 0);
-
-            folderDetails.push({
-              folder: folder.split("\\").pop() || folder.split("/").pop(),
-              fullPath: folder,
-              images: diagnostics.total_images || 0,
-              indexSizeMb: (diagnostics.index_size_mb || 0).toFixed(2),
-              embeddingsSizeMb: (diagnostics.embeddings_size_mb || 0).toFixed(2),
-              thumbnails: diagnostics.thumbnail_count || 0,
-              lastIndexed: diagnostics.last_indexed ? new Date(diagnostics.last_indexed * 1000).toLocaleString() : "Never"
-            });
-          } catch (err) {
-            console.error("Failed to get diagnostics for folder:", folder, err);
+        for (const { analytics: a } of perFolder) {
+          grandTotal     += Number(a.total_images   || 0);
+          grandSizeBytes += Number(a.total_size_bytes || 0);
+        }
+        for (const { diag: d } of perFolder) {
+          grandIndexMb += Number(d.index_size_mb    || 0);
+          grandEmbMb   += Number(d.embeddings_size_mb || 0);
+        }
+        for (const { analytics: a } of perFolder) {
+          for (const { ext, count } of (a.by_extension || [])) {
+            extMap[ext] = (extMap[ext] || 0) + count;
+          }
+          for (const { year, count } of (a.by_year || [])) {
+            yearMap[year] = (yearMap[year] || 0) + count;
+          }
+          if (a.largest_file && (!globalLargest || a.largest_size_bytes > globalLargest.size)) {
+            globalLargest = { file: a.largest_file.split(/[\\/]/).pop(), size: a.largest_size_bytes };
+          }
+          if (a.smallest_file && a.smallest_size_bytes > 0 &&
+              (!globalSmallest || a.smallest_size_bytes < globalSmallest.size)) {
+            globalSmallest = { file: a.smallest_file.split(/[\\/]/).pop(), size: a.smallest_size_bytes };
           }
         }
 
-        let html = `
-          <div class="analytics-section">
-            <div class="analytics-section-title">📊 Overall Statistics</div>
-            <div class="analytics-stat">
-              <div class="analytics-stat-label">Total Folders</div>
+        const extArr = Object.entries(extMap).sort((a, b) => b[1] - a[1]).slice(0, 10);
+        const yearArr = Object.entries(yearMap).sort((a, b) => a[0].localeCompare(b[0]));
+        const maxExt  = extArr.length  ? Math.max(...extArr.map(e => e[1]))  : 1;
+        const maxYear = yearArr.length ? Math.max(...yearArr.map(y => y[1])) : 1;
+
+        const extBars = extArr.map(([ext, count]) => `
+          <div class="analytics-bar-row">
+            <span class="analytics-bar-label">.${escapeHtml(ext)}</span>
+            <div class="analytics-bar-track"><div class="analytics-bar-fill" style="width:${Math.round(count/maxExt*100)}%"></div></div>
+            <span class="analytics-bar-count">${count}</span>
+          </div>`).join("");
+
+        const yearBars = yearArr.map(([year, count]) => `
+          <div class="analytics-bar-row">
+            <span class="analytics-bar-label">${escapeHtml(String(year))}</span>
+            <div class="analytics-bar-track"><div class="analytics-bar-fill year-bar" style="width:${Math.round(count/maxYear*100)}%"></div></div>
+            <span class="analytics-bar-count">${count}</span>
+          </div>`).join("");
+
+        // ---- Per-folder breakdown table ----
+        const folderRows = perFolder.map(({ folder, analytics: a, diag: d }) => {
+          const name      = folder.split(/[\\/]/).pop() || folder;
+          const imgs      = Number(a.total_images    || 0);
+          const sizeBytes = Number(a.total_size_bytes || 0);
+          const avgBytes  = Number(a.avg_size_bytes  || 0);
+          const indexMb   = Number(d.index_size_mb   || 0);
+          const embMb     = Number(d.embeddings_size_mb || 0);
+          const thumbs    = Number(d.thumbnail_count  || 0);
+          const lastIdx   = d.last_indexed
+            ? new Date(d.last_indexed * 1000).toLocaleDateString()
+            : 'Not indexed';
+          const topExt    = (a.by_extension || [])[0]?.ext || '—';
+          const largestF  = (a.largest_file  || '').split(/[\\/]/).pop() || '—';
+          const largestSz = _fmtBytes(a.largest_size_bytes || 0);
+
+          return `
+            <div class="analytics-folder-card">
+              <div class="analytics-folder-card-name" title="${escapeHtml(folder)}">📁 ${escapeHtml(name)}</div>
+              <div class="analytics-folder-card-grid">
+                <div class="afc-cell"><span class="afc-label">Photos</span><span class="afc-value">${imgs.toLocaleString()}</span></div>
+                <div class="afc-cell"><span class="afc-label">Total Size</span><span class="afc-value">${_fmtBytes(sizeBytes)}</span></div>
+                <div class="afc-cell"><span class="afc-label">Avg Size</span><span class="afc-value">${_fmtBytes(avgBytes)}</span></div>
+                <div class="afc-cell"><span class="afc-label">Most Common</span><span class="afc-value">.${escapeHtml(topExt)}</span></div>
+                <div class="afc-cell"><span class="afc-label">Thumbnails</span><span class="afc-value">${thumbs}</span></div>
+                <div class="afc-cell"><span class="afc-label">Index Size</span><span class="afc-value">${indexMb.toFixed(2)} MB</span></div>
+                <div class="afc-cell"><span class="afc-label">Embeddings</span><span class="afc-value">${embMb.toFixed(2)} MB</span></div>
+                <div class="afc-cell"><span class="afc-label">Last Indexed</span><span class="afc-value">${escapeHtml(lastIdx)}</span></div>
+                <div class="afc-cell afc-wide"><span class="afc-label">Largest File</span><span class="afc-value" title="${escapeHtml(a.largest_file||'')}">${escapeHtml(largestF)} (${largestSz})</span></div>
+              </div>
+            </div>`;
+        }).join("");
+
+        // ---- Render ----
+        analyticsPanelContent.innerHTML = `
+          <!-- Hero stats -->
+          <div class="analytics-stats-grid">
+            <div class="analytics-stat-card">
+              <div class="analytics-stat-value">${grandTotal.toLocaleString()}</div>
+              <div class="analytics-stat-label">Total Photos</div>
+            </div>
+            <div class="analytics-stat-card">
               <div class="analytics-stat-value">${selectedFolders.length}</div>
+              <div class="analytics-stat-label">Folders</div>
             </div>
-            <div class="analytics-stat">
-              <div class="analytics-stat-label">Total Images</div>
-              <div class="analytics-stat-value">${totalImages}</div>
+            <div class="analytics-stat-card">
+              <div class="analytics-stat-value">${_fmtBytes(grandSizeBytes)}</div>
+              <div class="analytics-stat-label">Total Size</div>
             </div>
-            <div class="analytics-stat">
-              <div class="analytics-stat-label">Total Index Size</div>
-              <div class="analytics-stat-value">${totalDiskSize.toFixed(2)} MB</div>
+            <div class="analytics-stat-card">
+              <div class="analytics-stat-value">${grandTotal > 0 ? _fmtBytes(Math.round(grandSizeBytes / grandTotal)) : '—'}</div>
+              <div class="analytics-stat-label">Avg Photo Size</div>
             </div>
-            <div class="analytics-stat">
-              <div class="analytics-stat-label">Avg Images/Folder</div>
-              <div class="analytics-stat-value">${selectedFolders.length > 0 ? (totalImages / selectedFolders.length).toFixed(0) : 0}</div>
+            <div class="analytics-stat-card">
+              <div class="analytics-stat-value">${(grandIndexMb + grandEmbMb).toFixed(1)} MB</div>
+              <div class="analytics-stat-label">Index Overhead</div>
             </div>
-            <div class="analytics-stat">
-              <div class="analytics-stat-label">Recent Searches</div>
-              <div class="analytics-stat-value">${recentSearches.length}</div>
+            <div class="analytics-stat-card">
+              <div class="analytics-stat-value">${extArr.length}</div>
+              <div class="analytics-stat-label">File Types</div>
             </div>
           </div>
+
+          ${globalLargest ? `
+          <p class="analytics-section-title">Notable Files</p>
+          <div class="analytics-notable">
+            <div class="analytics-notable-label">Largest</div>
+            <div class="analytics-notable-file">${escapeHtml(globalLargest.file)}</div>
+            <div class="analytics-notable-size">${_fmtBytes(globalLargest.size)}</div>
+          </div>
+          ${globalSmallest ? `<div class="analytics-notable">
+            <div class="analytics-notable-label">Smallest</div>
+            <div class="analytics-notable-file">${escapeHtml(globalSmallest.file)}</div>
+            <div class="analytics-notable-size">${_fmtBytes(globalSmallest.size)}</div>
+          </div>` : ''}` : ''}
+
+          ${extBars ? `<p class="analytics-section-title">File Types</p><div class="analytics-chart">${extBars}</div>` : ''}
+          ${yearBars ? `<p class="analytics-section-title">Photos by Year</p><div class="analytics-chart">${yearBars}</div>` : ''}
+
+          <p class="analytics-section-title">Per-Folder Details</p>
+          <div class="analytics-folder-cards">${folderRows}</div>
+
+          ${recentSearches.length > 0 ? `
+          <p class="analytics-section-title">Recent Searches</p>
+          <div class="analytics-chart">${recentSearches.slice(0, 10).map(s =>
+            `<div style="padding:3px 0;color:rgba(255,255,255,0.55);font-size:12px">• ${escapeHtml(s)}</div>`
+          ).join('')}</div>` : ''}
         `;
-
-        if (folderDetails.length > 0) {
-          html += `<div class="analytics-section">
-            <div class="analytics-section-title">📁 Folder Breakdown</div>`;
-          
-          folderDetails.forEach(detail => {
-            html += `
-              <div class="analytics-folder-item">
-                <div class="analytics-folder-name" title="${escapeHtml(detail.fullPath)}">${escapeHtml(detail.folder)}</div>
-                <div class="analytics-folder-stats">
-                  <div><strong>Images:</strong> ${detail.images}</div>
-                  <div><strong>Index:</strong> ${detail.indexSizeMb} MB</div>
-                  <div><strong>Embeddings:</strong> ${detail.embeddingsSizeMb} MB</div>
-                  <div><strong>Thumbnails:</strong> ${detail.thumbnails}</div>
-                </div>
-              </div>
-            `;
-          });
-
-          html += `</div>`;
-        }
-
-        if (recentSearches.length > 0) {
-          html += `<div class="analytics-section">
-            <div class="analytics-section-title">🔍 Recent Searches</div>
-            <div style="font-size: 12px;">`;
-          
-          recentSearches.slice(0, 10).forEach(search => {
-            html += `<div style="padding: 4px 0; color: #666;">• ${search}</div>`;
-          });
-
-          html += `</div></div>`;
-        }
-
-        analyticsContent.innerHTML = html;
       } catch (err) {
         console.error("Failed to load analytics:", err);
-        analyticsContent.innerHTML = `<p style="color: #d32f2f;">Failed to load analytics: ${String(err)}</p>`;
+        analyticsPanelContent.innerHTML = `<p style="color:#f87171">Failed to load analytics: ${escapeHtml(String(err))}</p>`;
       }
     }
 
@@ -2366,9 +2359,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   copyPathsBtn.addEventListener("click", copySelectedPaths);
   deselectAllBtn.addEventListener("click", deselectAll);
 
-  // Diagnostics
-  diagnosticsBtn.addEventListener("click", showDiagnostics);
-  closeDiagnosticsBtn.addEventListener("click", closeDiagnostics);
+  // Diagnostics button removed — sb-diag-btn now opens Analytics
 
   // Cleanup Panel
   cleanupIndexBtn.addEventListener("click", showCleanupPanel);
@@ -2446,7 +2437,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // S6-F3: Status bar diagnostics button
-  sbDiagBtn.addEventListener("click", showDiagnostics);
+  sbDiagBtn.addEventListener("click", showAnalytics);
 
   // Filename search modal
   filenameSearchBtn.addEventListener("click", searchByFilename);
@@ -2587,7 +2578,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         [collectionsPanel,  () => collectionsPanel.style.display  = "none"],
         [duplicatesPanel,   () => duplicatesPanel.style.display   = "none"],
         [cleanupPanel,      () => cleanupPanel.style.display      = "none"],
-        [diagnosticsPanel,  () => diagnosticsPanel.style.display  = "none"],
       ];
       for (const [el, close] of panels) {
         if (el && el.style.display !== "none") { close(); return; }
@@ -2641,89 +2631,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
     analyticsPanel.style.display = "flex";
-    analyticsPanelContent.innerHTML = `<p style="color:rgba(255,255,255,0.4)">Loading analytics…</p>`;
-
-    const folder = selectedFolders[0];
-    let data;
-    try {
-      data = await invoke("get_folder_analytics", { folder });
-    } catch (err) {
-      analyticsPanelContent.innerHTML = `<p style="color:#f87171">Error: ${escapeHtml(String(err))}</p>`;
-      return;
-    }
-
-    if (data.error) {
-      analyticsPanelContent.innerHTML = `<p style="color:#fbbf24">${escapeHtml(data.error)}</p>`;
-      return;
-    }
-
-    const totalImages = data.total_images || 0;
-    const totalSize = data.total_size_bytes || 0;
-    const avgSize = data.avg_size_bytes || 0;
-    const byExt = data.by_extension || [];
-    const byYear = data.by_year || [];
-    const largestFile = (data.largest_file || "").split(/[\\/]/).pop();
-    const smallestFile = (data.smallest_file || "").split(/[\\/]/).pop();
-
-    const maxExt = byExt.length > 0 ? Math.max(...byExt.map(e => e.count)) : 1;
-    const maxYear = byYear.length > 0 ? Math.max(...byYear.map(y => y.count)) : 1;
-
-    const extBars = byExt.slice(0, 8).map(({ ext, count }) => `
-      <div class="analytics-bar-row">
-        <span class="analytics-bar-label">.${escapeHtml(ext)}</span>
-        <div class="analytics-bar-track"><div class="analytics-bar-fill" style="width:${Math.round((count / maxExt) * 100)}%"></div></div>
-        <span class="analytics-bar-count">${count}</span>
-      </div>`).join("");
-
-    const yearBars = byYear.map(({ year, count }) => `
-      <div class="analytics-bar-row">
-        <span class="analytics-bar-label">${escapeHtml(String(year))}</span>
-        <div class="analytics-bar-track"><div class="analytics-bar-fill year-bar" style="width:${Math.round((count / maxYear) * 100)}%"></div></div>
-        <span class="analytics-bar-count">${count}</span>
-      </div>`).join("");
-
-    analyticsPanelContent.innerHTML = `
-      <div class="analytics-stats-grid">
-        <div class="analytics-stat-card">
-          <div class="analytics-stat-value">${totalImages.toLocaleString()}</div>
-          <div class="analytics-stat-label">Photos</div>
-        </div>
-        <div class="analytics-stat-card">
-          <div class="analytics-stat-value">${_fmtBytes(totalSize)}</div>
-          <div class="analytics-stat-label">Total Size</div>
-        </div>
-        <div class="analytics-stat-card">
-          <div class="analytics-stat-value">${_fmtBytes(avgSize)}</div>
-          <div class="analytics-stat-label">Avg Size</div>
-        </div>
-        <div class="analytics-stat-card">
-          <div class="analytics-stat-value">${byExt.length}</div>
-          <div class="analytics-stat-label">File Types</div>
-        </div>
-      </div>
-
-      ${byExt.length > 0 ? `
-      <p class="analytics-section-title">File Types</p>
-      <div class="analytics-chart">${extBars}</div>` : ""}
-
-      ${byYear.length > 0 ? `
-      <p class="analytics-section-title">By Year</p>
-      <div class="analytics-chart">${yearBars}</div>` : ""}
-
-      ${largestFile ? `
-      <p class="analytics-section-title">Notable Files</p>
-      <div class="analytics-notable">
-        <div class="analytics-notable-label">Largest</div>
-        <div class="analytics-notable-file">${escapeHtml(largestFile)}</div>
-        <div class="analytics-notable-size">${_fmtBytes(data.largest_size_bytes)}</div>
-      </div>` : ""}
-      ${smallestFile ? `
-      <div class="analytics-notable">
-        <div class="analytics-notable-label">Smallest</div>
-        <div class="analytics-notable-file">${escapeHtml(smallestFile)}</div>
-        <div class="analytics-notable-size">${_fmtBytes(data.smallest_size_bytes)}</div>
-      </div>` : ""}
-    `;
+    // delegate to the main showAnalytics defined above
   }
 
   /* =================== S7-F2 — EXPORT METADATA CSV =================== */
@@ -2770,7 +2678,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     { icon: "📈", title: "Show Analytics",          desc: "Photo stats, file types, year chart",   shortcut: "",         action: () => showAnalytics() },
     { icon: "🔀", title: "Find Duplicates",         desc: "Scan for duplicate images",             shortcut: "",         action: () => duplicatesBtn?.click() },
     { icon: "🧹", title: "Cleanup Index",           desc: "Remove orphaned embeddings, compact",   shortcut: "",         action: () => cleanupIndexBtn?.click() },
-    { icon: "📋", title: "View Diagnostics",        desc: "Index health and storage info",         shortcut: "",         action: () => showDiagnostics() },
     { icon: "📚", title: "Open Collections",        desc: "Manage photo collections",              shortcut: "",         action: () => collectionsBtn?.click() },
     { icon: "📤", title: "Export Collection",       desc: "Export a collection to a folder",       shortcut: "",         action: () => collectionsBtn?.click() },
     { icon: "📄", title: "Export Metadata CSV",     desc: "Save EXIF data for selected photos",    shortcut: "",         action: () => exportMetadataCSV() },
