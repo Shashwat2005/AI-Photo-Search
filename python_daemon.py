@@ -53,6 +53,7 @@ from folder_indexing import (
     _image_key,
     generate_thumbnail,
     get_thumb_dir,
+    get_folder_analytics_data,
 )
 
 
@@ -157,6 +158,16 @@ def dispatch(command: str, args: dict) -> dict:
         if not folder:
             return _err("Missing 'folder' argument")
         return get_index_diagnostics(folder)
+
+    # ---- analytics ----
+    elif command == "analytics":
+        if not folder:
+            return _err("Missing 'folder' argument")
+        data = get_folder_analytics_data(folder)
+        if "error" in data:
+            return _err(data["error"])
+        data["status"] = "ok"
+        return data
 
     # ---- stats ----
     elif command == "stats":

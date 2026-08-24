@@ -1324,106 +1324,20 @@ fn export_metadata_csv(paths: Vec<String>, output_path: String) -> Result<Value,
 
 /// Compute analytics for an indexed folder purely from the manifest + fs::metadata.
 /// Returns: total_images, total_size_bytes, avg_size_bytes, by_extension, by_year,
-///          largest_file (path + bytes), smallest_file (path + bytes).
-/// Pure Rust — no Python spawned. Typically <20 ms for 1000 files.
+/// Delegate to engine.py "analytics" command which correctly resolves
+/// the hash-based index path via get_index_dir().
+/// Returns: total_images, total_size_bytes, avg_size_bytes,
+///          by_extension[], by_year[], largest_file, smallest_file.
 #[tauri::command]
 fn get_folder_analytics(folder: String) -> Result<Value, String> {
-    let folder_path = Path::new(&folder);
-    if !folder_path.exists() {
-        return Err(format!("Folder not found: {}", folder));
+    // Try daemon first (fast path — model already loaded)
+    let args = serde_json::json!({ "folder": folder });
+    if let Ok(result) = call_daemon("analytics", args) {
+        return Ok(result);
     }
 
-    // Locate the index manifest
-    let index_dir = folder_path.join(".ai-photo-index");
-    let manifest_path = index_dir.join("manifest.json");
-    if !manifest_path.exists() {
-        return Ok(serde_json::json!({ "error": "Folder not indexed yet" }));
-    }
-
-    let manifest_text = fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("Cannot read manifest: {}", e))?;
-    let manifest: Value = serde_json::from_str(&manifest_text)
-        .map_err(|e| format!("Manifest parse error: {}", e))?;
-
-    let files = match manifest.get("files").and_then(|f| f.as_object()) {
-        Some(f) => f,
-        None => return Ok(serde_json::json!({ "total_images": 0 })),
-    };
-
-    let mut total_size: u64 = 0;
-    let mut by_extension: HashMap<String, u64> = HashMap::new();
-    let mut by_year: HashMap<String, u64> = HashMap::new();
-    let mut largest_size: u64 = 0;
-    let mut largest_file = String::new();
-    let mut smallest_size: u64 = u64::MAX;
-    let mut smallest_file = String::new();
-    let mut count: u64 = 0;
-
-    for path_str in files.keys() {
-        let p = Path::new(path_str);
-
-        // Extension bucket
-        let ext = p.extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_else(|| "unknown".to_string());
-        *by_extension.entry(ext).or_insert(0) += 1;
-
-        // fs::metadata for size + mtime
-        if let Ok(meta) = fs::metadata(p) {
-            let size = meta.len();
-            total_size += size;
-            count += 1;
-
-            if size > largest_size {
-                largest_size = size;
-                largest_file = path_str.clone();
-            }
-            if size < smallest_size {
-                smallest_size = size;
-                smallest_file = path_str.clone();
-            }
-
-            // Year bucket from mtime
-            if let Ok(mtime) = meta.modified() {
-                if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
-                    let secs = dur.as_secs();
-                    // Approx year from epoch seconds (no chrono needed)
-                    let year = 1970 + secs / 31_557_600; // ~365.25 days
-                    *by_year.entry(year.to_string()).or_insert(0) += 1;
-                }
-            }
-        } else {
-            count += 1; // Count even if we can't stat
-        }
-    }
-
-    let avg_size = if count > 0 { total_size / count } else { 0 };
-    if smallest_size == u64::MAX { smallest_size = 0; }
-
-    // Convert by_extension and by_year maps to sorted JSON arrays
-    let mut ext_vec: Vec<(String, u64)> = by_extension.into_iter().collect();
-    ext_vec.sort_by(|a, b| b.1.cmp(&a.1));
-    let ext_arr: Vec<Value> = ext_vec.iter()
-        .map(|(k, v)| serde_json::json!({ "ext": k, "count": v }))
-        .collect();
-
-    let mut year_vec: Vec<(String, u64)> = by_year.into_iter().collect();
-    year_vec.sort_by(|a, b| a.0.cmp(&b.0));
-    let year_arr: Vec<Value> = year_vec.iter()
-        .map(|(k, v)| serde_json::json!({ "year": k, "count": v }))
-        .collect();
-
-    Ok(serde_json::json!({
-        "total_images": count,
-        "total_size_bytes": total_size,
-        "avg_size_bytes": avg_size,
-        "by_extension": ext_arr,
-        "by_year": year_arr,
-        "largest_file": largest_file,
-        "largest_size_bytes": largest_size,
-        "smallest_file": smallest_file,
-        "smallest_size_bytes": smallest_size,
-    }))
+    // Subprocess fallback
+    run_engine("analytics", &folder, None, None, None, None, None)
 }
 
 // ─── TAG MANAGEMENT ──────────────────────────────────────────────────────────
