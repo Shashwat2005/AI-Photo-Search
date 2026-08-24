@@ -2625,14 +2625,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   }
 
-  async function showAnalytics() {
-    if (selectedFolders.length === 0) {
-      alert("Please select a folder first.");
-      return;
-    }
-    analyticsPanel.style.display = "flex";
-    // delegate to the main showAnalytics defined above
-  }
 
   /* =================== S7-F2 — EXPORT METADATA CSV =================== */
 

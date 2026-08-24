@@ -23,6 +23,7 @@ from folder_indexing import (
     _image_key,
     generate_thumbnail,
     get_thumb_dir,
+    get_folder_analytics_data,
 )
 
 # ---------- PATHS ----------
@@ -281,6 +282,24 @@ def main():
         try:
             diagnostics = get_index_diagnostics(folder)
             success(diagnostics)
+        except Exception as e:
+            error(str(e))
+
+    # =====================================================
+    # ANALYTICS (rich per-file stats — uses correct index path)
+    # =====================================================
+    elif command == "analytics":
+        if len(sys.argv) < 3:
+            error("Missing arguments for analytics")
+
+        folder = Path(sys.argv[2]).resolve()
+
+        if not folder.exists():
+            error("Folder path not found")
+
+        try:
+            data = get_folder_analytics_data(folder)
+            success(data)
         except Exception as e:
             error(str(e))
 

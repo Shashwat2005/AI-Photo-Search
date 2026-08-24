@@ -726,6 +726,96 @@ def get_index_diagnostics(folder_path: Path):
     return diagnostics
 
 
+def get_folder_analytics_data(folder_path: Path) -> dict:
+    """
+    Return rich per-file analytics for folder_path:
+      total_images, total_size_bytes, avg_size_bytes,
+      by_extension (sorted list of {ext, count}),
+      by_year      (sorted list of {year, count}),
+      largest_file / largest_size_bytes,
+      smallest_file / smallest_size_bytes.
+
+    Reads only from the cached manifest (no CLIP inference).
+    """
+    index_dir = get_index_dir(folder_path)
+    manifest_file = _manifest_file(index_dir)
+
+    if not manifest_file.exists():
+        return {"error": "Folder not indexed yet"}
+
+    try:
+        manifest = _load_manifest(index_dir)
+    except Exception as e:
+        return {"error": str(e)}
+
+    files = manifest.get("files", {})
+    if not files:
+        return {
+            "total_images": 0,
+            "total_size_bytes": 0,
+            "avg_size_bytes": 0,
+            "by_extension": [],
+            "by_year": [],
+        }
+
+    total_size = 0
+    count = 0
+    by_extension: dict = {}
+    by_year: dict = {}
+    largest_size = 0
+    largest_file = ""
+    smallest_size = -1
+    smallest_file = ""
+
+    for path_str in files:
+        p = Path(path_str)
+        ext = p.suffix.lstrip(".").lower() or "unknown"
+        by_extension[ext] = by_extension.get(ext, 0) + 1
+
+        try:
+            st = p.stat()
+            size = st.st_size
+            total_size += size
+            count += 1
+
+            if size > largest_size:
+                largest_size = size
+                largest_file = path_str
+            if smallest_size < 0 or size < smallest_size:
+                smallest_size = size
+                smallest_file = path_str
+
+            # Year bucket from mtime
+            import datetime
+            year = str(datetime.datetime.fromtimestamp(st.st_mtime).year)
+            by_year[year] = by_year.get(year, 0) + 1
+        except OSError:
+            # File no longer on disk — still count from manifest
+            count += 1
+
+    ext_arr = sorted(
+        [{"ext": k, "count": v} for k, v in by_extension.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )
+    year_arr = sorted(
+        [{"year": k, "count": v} for k, v in by_year.items()],
+        key=lambda x: x["year"],
+    )
+
+    return {
+        "total_images": count,
+        "total_size_bytes": total_size,
+        "avg_size_bytes": total_size // count if count > 0 else 0,
+        "by_extension": ext_arr,
+        "by_year": year_arr,
+        "largest_file": largest_file,
+        "largest_size_bytes": largest_size,
+        "smallest_file": smallest_file,
+        "smallest_size_bytes": max(smallest_size, 0),
+    }
+
+
 def search_similar_images(folder_path: Path, image_path: str, top_k: int = 10):
     """Search for similar images based on visual similarity to a given image"""
     index_dir = get_index_dir(folder_path)
