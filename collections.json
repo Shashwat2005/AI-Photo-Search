@@ -1,18 +1,5 @@
 {
-  "collections": [
-    {
-      "id": "754cafb1150c",
-      "name": "fountain",
-      "created_at": 1787681655.8594677,
-      "image_count": 0
-    },
-    {
-      "id": "427abef22624",
-      "name": "girl",
-      "created_at": 1787681674.611847,
-      "image_count": 0
-    }
-  ],
+  "collections": [],
   "image_collections": {
     "C:\\Users\\saxen\\OneDrive\\Pictures\\Saved Pictures\\fountain-2562920_1280.jpg": []
   }

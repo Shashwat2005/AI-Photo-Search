@@ -613,9 +613,12 @@ document.addEventListener("DOMContentLoaded", async () => {
           name
         });
         newCollectionInput.value = "";
+        // Daemon returns: { status: "ok", collection: { id, name, ... } }
+        // Subprocess fallback returns the collection dict directly
+        const col = result?.collection || result;
+        const collectionId = col?.id || "";
+        console.log("Created collection:", col, "id:", collectionId);
         showToast(`✓ Collection "${name}" created! Now pick images to add.`);
-        // Immediately open the add-images flow for the new collection
-        const collectionId = result?.id || result?.collection_id || (result?.id ?? "");
         if (collectionId) {
           await openAddImagesFlow(collectionId, name);
         } else {
@@ -685,7 +688,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     async function _aicRunSearch() {
       if (selectedFolders.length === 0) return;
-      const queryEl  = document.getElementById("aic-query-input");
+      const queryEl   = document.getElementById("aic-query-input");
       const resultsEl = document.getElementById("aic-results");
       if (!queryEl || !resultsEl) return;
 
@@ -700,32 +703,48 @@ document.addEventListener("DOMContentLoaded", async () => {
           collectionId: _aic.collectionId
         });
         (existing?.images || []).forEach(img => alreadyAdded.add(img.path));
-      } catch (_) {}
+      } catch (e) {
+        console.warn("Could not load existing collection images:", e);
+      }
 
       // Semantic search across all selected folders in parallel
       const perFolder = await Promise.all(
         selectedFolders.map(async (folder) => {
           try {
             const data = await invoke("engine_search", {
-              folder, query, filters: null, sortBy: "relevance", topK: 30
+              folder,
+              query,
+              filters: null,
+              sortBy: "relevance",
+              topK: 30
             });
-            return (data?.results || []).map(r => ({ ...r, _folder: folder }));
-          } catch (_) { return []; }
+            const results = Array.isArray(data?.results) ? data.results : [];
+            return results.map(r => ({ ...r, _folder: folder }));
+          } catch (err) {
+            console.error(`AIC search failed for folder "${folder}":`, err);
+            return [];
+          }
         })
       );
 
-      // Merge & deduplicate
+      // Merge & deduplicate by path
       const seen = new Set();
       const items = perFolder.flat().filter(r => {
-        if (seen.has(r.path)) return false;
+        if (!r.path || seen.has(r.path)) return false;
         seen.add(r.path);
         return true;
       });
 
       _aic.results = items;
-      // Keep existing selections that are still in results
+      // Keep selections valid
       for (const p of [..._aic.selected]) {
         if (!seen.has(p)) _aic.selected.delete(p);
+      }
+
+      if (items.length === 0 && perFolder.every(a => a.length === 0)) {
+        resultsEl.innerHTML = `<div class="aic-empty">No images found for &ldquo;${escapeHtml(query)}&rdquo;. Try a different query or make sure folders are indexed.</div>`;
+        _aicUpdateFooter();
+        return;
       }
 
       _aicRenderGrid(alreadyAdded);
