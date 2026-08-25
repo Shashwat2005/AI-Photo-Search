@@ -582,6 +582,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                 <div class="collection-item-count">${collection.image_count} image${collection.image_count !== 1 ? 's' : ''}</div>
                 <div class="collection-item-actions">
                   <button data-action="view-collection"   data-collection-id="${cid}">View</button>
+                  <button data-action="add-images-to-collection" data-collection-id="${cid}" data-collection-name="${cname}">📸 Add</button>
                   <button data-action="export-collection" data-collection-id="${cid}" data-collection-name="${cname}">&#x1F4E4; Export</button>
                   <button class="delete-btn" data-action="delete-collection" data-collection-id="${cid}">Delete</button>
                 </div>
@@ -607,18 +608,273 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       try {
-        await invoke("engine_create_collection", {
+        const result = await invoke("engine_create_collection", {
           folder: _collectionsFolder(),
           name
         });
         newCollectionInput.value = "";
-        await loadCollections();
-        showToast(`✓ Collection "${name}" created!`);
+        showToast(`✓ Collection "${name}" created! Now pick images to add.`);
+        // Immediately open the add-images flow for the new collection
+        const collectionId = result?.id || result?.collection_id || (result?.id ?? "");
+        if (collectionId) {
+          await openAddImagesFlow(collectionId, name);
+        } else {
+          await loadCollections();
+        }
       } catch (err) {
         console.error("Failed to create collection:", err);
         alert(`Failed to create collection: ${String(err)}`);
       }
     }
+
+    /* ── ADD IMAGES TO COLLECTION FLOW ── */
+    // State for the add-images panel
+    const _aic = {
+      collectionId: null,
+      collectionName: null,
+      selected: new Set(),  // selected image paths
+      results: [],          // current search result items
+    };
+
+    async function openAddImagesFlow(collectionId, collectionName) {
+      _aic.collectionId   = collectionId;
+      _aic.collectionName = collectionName;
+      _aic.selected       = new Set();
+      _aic.results        = [];
+
+      collectionsPanel.style.display = "flex";
+      collectionsContent.innerHTML = `
+        <div class="aic-panel" id="aic-panel">
+          <div class="aic-header">
+            <div class="aic-title">
+              <span class="aic-icon">📸</span>
+              <div>
+                <div class="aic-heading">Add images to &ldquo;${escapeHtml(collectionName)}&rdquo;</div>
+                <div class="aic-sub">Images are searched across all selected folders</div>
+              </div>
+            </div>
+          </div>
+          <div class="aic-search-row">
+            <input id="aic-query-input" class="aic-query-input"
+                   type="text" placeholder="Refine search query…"
+                   value="${escapeHtml(collectionName)}" />
+            <button id="aic-search-btn" class="aic-search-btn">Search</button>
+          </div>
+          <div id="aic-results" class="aic-results">
+            <div class="aic-loading">Searching for images matching &ldquo;${escapeHtml(collectionName)}&rdquo;&hellip;</div>
+          </div>
+          <div class="aic-footer">
+            <button id="aic-add-btn" class="aic-add-btn" disabled>Add 0 images</button>
+            <button id="aic-select-all-btn" class="aic-select-all-btn">Select All</button>
+            <button id="aic-skip-btn" class="aic-skip-btn">Done &rarr; View Collections</button>
+          </div>
+        </div>`;
+
+      // Wire up controls
+      document.getElementById("aic-search-btn").addEventListener("click", () => _aicRunSearch());
+      document.getElementById("aic-query-input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") _aicRunSearch();
+      });
+      document.getElementById("aic-add-btn").addEventListener("click", _aicAddSelected);
+      document.getElementById("aic-select-all-btn").addEventListener("click", _aicToggleSelectAll);
+      document.getElementById("aic-skip-btn").addEventListener("click", loadCollections);
+
+      // Kick off initial search with the collection name
+      await _aicRunSearch();
+    }
+
+    async function _aicRunSearch() {
+      if (selectedFolders.length === 0) return;
+      const queryEl  = document.getElementById("aic-query-input");
+      const resultsEl = document.getElementById("aic-results");
+      if (!queryEl || !resultsEl) return;
+
+      const query = queryEl.value.trim() || _aic.collectionName;
+      resultsEl.innerHTML = `<div class="aic-loading">Searching for &ldquo;${escapeHtml(query)}&rdquo;&hellip;</div>`;
+
+      // Already-added image paths for this collection
+      let alreadyAdded = new Set();
+      try {
+        const existing = await invoke("engine_collection_images", {
+          folder: _collectionsFolder(),
+          collectionId: _aic.collectionId
+        });
+        (existing?.images || []).forEach(img => alreadyAdded.add(img.path));
+      } catch (_) {}
+
+      // Semantic search across all selected folders in parallel
+      const perFolder = await Promise.all(
+        selectedFolders.map(async (folder) => {
+          try {
+            const data = await invoke("engine_search", {
+              folder, query, filters: null, sortBy: "relevance", topK: 30
+            });
+            return (data?.results || []).map(r => ({ ...r, _folder: folder }));
+          } catch (_) { return []; }
+        })
+      );
+
+      // Merge & deduplicate
+      const seen = new Set();
+      const items = perFolder.flat().filter(r => {
+        if (seen.has(r.path)) return false;
+        seen.add(r.path);
+        return true;
+      });
+
+      _aic.results = items;
+      // Keep existing selections that are still in results
+      for (const p of [..._aic.selected]) {
+        if (!seen.has(p)) _aic.selected.delete(p);
+      }
+
+      _aicRenderGrid(alreadyAdded);
+    }
+
+    function _aicRenderGrid(alreadyAdded = new Set()) {
+      const resultsEl = document.getElementById("aic-results");
+      if (!resultsEl) return;
+
+      if (_aic.results.length === 0) {
+        resultsEl.innerHTML = `<div class="aic-empty">No images found. Try a different search query.</div>`;
+        _aicUpdateFooter();
+        return;
+      }
+
+      let html = `<div class="aic-grid">`;
+      for (const item of _aic.results) {
+        const p    = item.path || "";
+        const safe = escapeHtml(p);
+        const thumb = escapeHtml(toAssetUrl(item.thumbnail || p));
+        const name  = escapeHtml(p.split(/[/\\]/).pop());
+        const score = item.score != null ? Math.round(item.score * 100) : null;
+        const isAdded    = alreadyAdded.has(p);
+        const isSelected = _aic.selected.has(p);
+
+        html += `
+          <div class="aic-card${isSelected ? " selected" : ""}${isAdded ? " already-added" : ""}"
+               data-path="${safe}" title="${name}">
+            <img src="${thumb}" alt="${name}" loading="lazy" />
+            ${isAdded
+              ? `<div class="aic-badge added">✓ Added</div>`
+              : `<div class="aic-checkbox${isSelected ? " checked" : ""}">${isSelected ? "✓" : ""}</div>`
+            }
+            ${score !== null ? `<div class="aic-score">${score}%</div>` : ""}
+            <div class="aic-name">${name}</div>
+          </div>`;
+      }
+      html += `</div>`;
+      resultsEl.innerHTML = html;
+
+      // Click to toggle selection
+      resultsEl.querySelectorAll(".aic-card:not(.already-added)").forEach(card => {
+        card.addEventListener("click", () => {
+          const path = card.dataset.path;
+          if (_aic.selected.has(path)) {
+            _aic.selected.delete(path);
+            card.classList.remove("selected");
+            const cb = card.querySelector(".aic-checkbox");
+            if (cb) { cb.classList.remove("checked"); cb.textContent = ""; }
+          } else {
+            _aic.selected.add(path);
+            card.classList.add("selected");
+            const cb = card.querySelector(".aic-checkbox");
+            if (cb) { cb.classList.add("checked"); cb.textContent = "✓"; }
+          }
+          _aicUpdateFooter();
+        });
+      });
+
+      _aicUpdateFooter();
+    }
+
+    function _aicUpdateFooter() {
+      const addBtn = document.getElementById("aic-add-btn");
+      const selAllBtn = document.getElementById("aic-select-all-btn");
+      if (!addBtn) return;
+      const n = _aic.selected.size;
+      addBtn.textContent = n === 0 ? "Add 0 images" : `Add ${n} image${n !== 1 ? "s" : ""} →`;
+      addBtn.disabled = n === 0;
+      // Toggle Select All label
+      if (selAllBtn) {
+        const selectable = _aic.results.filter(r => r.path).length;
+        selAllBtn.textContent = _aic.selected.size >= selectable ? "Deselect All" : "Select All";
+      }
+    }
+
+    function _aicToggleSelectAll() {
+      const selectable = _aic.results.filter(r => r.path);
+      const allSelected = _aic.selected.size >= selectable.length;
+      if (allSelected) {
+        _aic.selected.clear();
+      } else {
+        selectable.forEach(r => _aic.selected.add(r.path));
+      }
+      // Re-render to reflect state
+      _aicRenderGrid(); // alreadyAdded not needed here, just re-render
+      // Re-render preserving already-added info (best-effort; avoid extra await)
+      const resultsEl = document.getElementById("aic-results");
+      if (resultsEl) {
+        resultsEl.querySelectorAll(".aic-card:not(.already-added)").forEach(card => {
+          const path = card.dataset.path;
+          const cb = card.querySelector(".aic-checkbox");
+          if (_aic.selected.has(path)) {
+            card.classList.add("selected");
+            if (cb) { cb.classList.add("checked"); cb.textContent = "✓"; }
+          } else {
+            card.classList.remove("selected");
+            if (cb) { cb.classList.remove("checked"); cb.textContent = ""; }
+          }
+          card.addEventListener("click", () => {
+            if (_aic.selected.has(path)) {
+              _aic.selected.delete(path);
+              card.classList.remove("selected");
+              if (cb) { cb.classList.remove("checked"); cb.textContent = ""; }
+            } else {
+              _aic.selected.add(path);
+              card.classList.add("selected");
+              if (cb) { cb.classList.add("checked"); cb.textContent = "✓"; }
+            }
+            _aicUpdateFooter();
+          });
+        });
+      }
+      _aicUpdateFooter();
+    }
+
+    async function _aicAddSelected() {
+      if (_aic.selected.size === 0 || !_aic.collectionId) return;
+      const addBtn = document.getElementById("aic-add-btn");
+      if (addBtn) { addBtn.disabled = true; addBtn.textContent = "Adding…"; }
+
+      const paths = [..._aic.selected];
+      let added = 0, errors = [];
+
+      for (const imagePath of paths) {
+        try {
+          await invoke("engine_add_to_collection", {
+            folder: _collectionsFolder(),
+            collectionId: _aic.collectionId,
+            imagePath
+          });
+          added++;
+        } catch (err) {
+          errors.push(imagePath.split(/[/\\]/).pop());
+        }
+      }
+
+      _aic.selected.clear();
+
+      if (errors.length > 0) {
+        showToast(`Added ${added}. Failed: ${errors.join(", ")}`);
+      } else {
+        showToast(`✓ Added ${added} image${added !== 1 ? "s" : ""} to "${_aic.collectionName}"`);
+      }
+
+      // Re-run search to refresh already-added badges
+      await _aicRunSearch();
+    }
+
 
     async function viewCollection(collectionId) {
       if (selectedFolders.length === 0) {
@@ -2410,6 +2666,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (deleteBtn) {
       const collectionId = deleteBtn.dataset.collectionId;
       if (collectionId) deleteCollection(collectionId);
+      return;
+    }
+
+    // Add images to collection
+    const addImgBtn = e.target.closest("[data-action='add-images-to-collection']");
+    if (addImgBtn) {
+      const collectionId   = addImgBtn.dataset.collectionId;
+      const collectionName = addImgBtn.dataset.collectionName || collectionId;
+      if (collectionId) openAddImagesFlow(collectionId, collectionName);
       return;
     }
 
