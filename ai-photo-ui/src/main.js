@@ -534,91 +534,83 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     /* --------------- COLLECTIONS PANEL MANAGEMENT --------------- */
+    // Collections are stored globally — they work across any number of selected folders.
+    // The `folder` argument passed to Rust commands is just a routing token; the
+    // actual storage is BASE_DIR/collections.json which is folder-independent.
+    function _collectionsFolder() {
+      // Use first selected folder as the routing token. Collections are global so
+      // it doesn't matter which folder we pick — the data is the same.
+      return selectedFolders[0] || "";
+    }
+
     async function showCollectionsPanel() {
       if (selectedFolders.length === 0) {
-        alert("Please select a folder first");
+        alert("Please select at least one folder first");
         return;
       }
-
-      if (selectedFolders.length > 1) {
-        alert("Collections are available for one folder at a time. Please select a single folder.");
-        return;
-      }
-
       await loadCollections();
     }
 
     async function loadCollections() {
-      const indexedFolder = selectedFolders[0];
-
       collectionsPanel.style.display = "flex";
-      collectionsContent.innerHTML = "<p>Loading collections...</p>";
+      collectionsContent.innerHTML = "<p>Loading collections…</p>";
 
       try {
         const data = await invoke("engine_collections", {
-          folder: indexedFolder
+          folder: _collectionsFolder()
         });
 
-        console.log("Collections:", data);
+        const collections = Array.isArray(data?.collections) ? data.collections : [];
 
-        if (!data.collections || data.collections.length === 0) {
+        if (collections.length === 0) {
           collectionsContent.innerHTML = `
             <div class="empty-collections">
               <p>📚 No collections yet</p>
-              <p>Create a collection above to organize your images</p>
-            </div>
-          `;
+              <p>Create a collection above to organise your photos across all folders</p>
+            </div>`;
           return;
         }
 
         let html = '';
-
-        for (const collection of data.collections) {
+        for (const collection of collections) {
+          const cid = escapeHtml(collection.id);
+          const cname = escapeHtml(collection.name);
           html += `
             <div class="collection-item">
               <div class="collection-item-header">
-                <div class="collection-item-name">${escapeHtml(collection.name)}</div>
-                <div class="collection-item-count">${collection.image_count} images</div>
+                <div class="collection-item-name">${cname}</div>
+                <div class="collection-item-count">${collection.image_count} image${collection.image_count !== 1 ? 's' : ''}</div>
                 <div class="collection-item-actions">
-                  <button data-action="view-collection" data-collection-id="${escapeHtml(collection.id)}">View</button>
-                  <button data-action="export-collection" data-collection-id="${escapeHtml(collection.id)}" data-collection-name="${escapeHtml(collection.name)}">&#x1F4E4; Export</button>
-                  <button class="delete-btn" data-action="delete-collection" data-collection-id="${escapeHtml(collection.id)}">Delete</button>
+                  <button data-action="view-collection"   data-collection-id="${cid}">View</button>
+                  <button data-action="export-collection" data-collection-id="${cid}" data-collection-name="${cname}">&#x1F4E4; Export</button>
+                  <button class="delete-btn" data-action="delete-collection" data-collection-id="${cid}">Delete</button>
                 </div>
               </div>
-            </div>
-          `;
+            </div>`;
         }
-
         collectionsContent.innerHTML = html;
       } catch (err) {
         console.error("Failed to load collections:", err);
-        collectionsContent.innerHTML = `<p style="color: #d32f2f;">Failed to load collections: ${String(err)}</p>`;
+        collectionsContent.innerHTML = `<p style="color:#d32f2f;">Failed to load collections: ${escapeHtml(String(err))}</p>`;
       }
     }
 
     async function createNewCollection() {
       const name = newCollectionInput.value.trim();
-
       if (!name) {
         alert("Please enter a collection name");
         return;
       }
-
       if (selectedFolders.length === 0) {
-        alert("Please select a folder first");
+        alert("Please select at least one folder first");
         return;
       }
 
-      const indexedFolder = selectedFolders[0];
-
       try {
-        const result = await invoke("engine_create_collection", {
-          folder: indexedFolder,
-          name: name
+        await invoke("engine_create_collection", {
+          folder: _collectionsFolder(),
+          name
         });
-
-        console.log("Created collection:", result);
-
         newCollectionInput.value = "";
         await loadCollections();
         showToast(`✓ Collection "${name}" created!`);
@@ -630,15 +622,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     async function viewCollection(collectionId) {
       if (selectedFolders.length === 0) {
-        alert("Please select a folder first");
+        alert("Please select at least one folder first");
         return;
       }
 
-      const indexedFolder = selectedFolders[0];
-
       try {
         const result = await invoke("engine_collection_images", {
-          folder: indexedFolder,
+          folder: _collectionsFolder(),
           collectionId
         });
 
@@ -648,9 +638,10 @@ document.addEventListener("DOMContentLoaded", async () => {
           return;
         }
 
-        await displayResults(images.map((img) => ({
+        // Images may come from any folder — build thumbnails via toAssetUrl
+        await displayResults(images.map(img => ({
           path: img.path,
-          thumbnail: img.thumbnail,
+          thumbnail: img.thumbnail || toAssetUrl(img.path),
           score: 1.0
         })));
         statusEl.textContent = `Showing ${images.length} image(s) from collection.`;
@@ -662,20 +653,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     async function deleteCollection(collectionId) {
-      if (!confirm("Delete this collection? (Images will not be deleted)")) {
-        return;
-      }
-
+      if (!confirm("Delete this collection? (Images will not be deleted)")) return;
       if (selectedFolders.length === 0) {
-        alert("Please select a folder first");
+        alert("Please select at least one folder first");
         return;
       }
-
-      const indexedFolder = selectedFolders[0];
 
       try {
         await invoke("engine_delete_collection", {
-          folder: indexedFolder,
+          folder: _collectionsFolder(),
           collectionId
         });
         await loadCollections();
@@ -686,49 +672,75 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
 
+    // In-panel picker for "Add to Collection" — replaces the blocking prompt()
+    let _addToCollPickerImage = null;
+
     async function addImageToCollection(imagePath) {
       if (selectedFolders.length === 0) {
-        alert("Please select a folder first");
+        alert("Please select at least one folder first");
         return;
       }
 
-      if (selectedFolders.length > 1) {
-        alert("Add to collection works with one selected folder at a time.");
-        return;
-      }
-
-      const indexedFolder = selectedFolders[0];
+      _addToCollPickerImage = imagePath;
 
       try {
-        const data = await invoke("engine_collections", { folder: indexedFolder });
+        const data = await invoke("engine_collections", { folder: _collectionsFolder() });
         const collections = Array.isArray(data?.collections) ? data.collections : [];
 
         if (collections.length === 0) {
-          alert("Create at least one collection first.");
+          // Open panel and let user create a collection first
+          collectionsPanel.style.display = "flex";
+          await loadCollections();
+          showToast("Create a collection first, then add the image to it.");
           return;
         }
 
-        const collectionOptions = collections
-          .map((c, idx) => `${idx + 1}. ${c.name}`)
-          .join("\\n");
-        const selection = prompt(`Add to which collection?\\n${collectionOptions}\\n\\nEnter number:`);
-        if (!selection) {
-          return;
-        }
+        // Build a quick inline picker overlay inside the collections panel
+        collectionsPanel.style.display = "flex";
+        const fname = escapeHtml(imagePath.split(/[/\\]/).pop());
+        const opts = collections.map((c, i) => `
+          <button class="coll-pick-btn" data-coll-id="${escapeHtml(c.id)}" data-coll-name="${escapeHtml(c.name)}">
+            <span class="coll-pick-name">${escapeHtml(c.name)}</span>
+            <span class="coll-pick-count">${c.image_count} imgs</span>
+          </button>`).join("");
 
-        const selectionIndex = Number(selection) - 1;
-        if (!Number.isInteger(selectionIndex) || selectionIndex < 0 || selectionIndex >= collections.length) {
-          alert("Invalid selection.");
-          return;
-        }
+        collectionsContent.innerHTML = `
+          <div class="coll-picker">
+            <p class="coll-picker-title">Add <strong>${fname}</strong> to collection:</p>
+            <div class="coll-picker-list">${opts}</div>
+            <button class="coll-picker-cancel">Cancel</button>
+          </div>`;
 
-        const chosen = collections[selectionIndex];
-        await invoke("engine_add_to_collection", {
-          folder: indexedFolder,
-          collectionId: chosen.id,
-          imagePath
-        });
-        showToast(`Added to ${chosen.name}`);
+        // Handle pick
+        collectionsContent.addEventListener("click", async function _pick(e) {
+          const btn = e.target.closest(".coll-pick-btn");
+          const cancel = e.target.closest(".coll-picker-cancel");
+          if (!btn && !cancel) return;
+
+          collectionsContent.removeEventListener("click", _pick);
+
+          if (cancel) {
+            await loadCollections();
+            return;
+          }
+
+          const collId   = btn.dataset.collId;
+          const collName = btn.dataset.collName;
+
+          try {
+            await invoke("engine_add_to_collection", {
+              folder: _collectionsFolder(),
+              collectionId: collId,
+              imagePath: _addToCollPickerImage
+            });
+            showToast(`✓ Added to "${collName}"`);
+          } catch (err) {
+            alert(`Failed to add: ${String(err)}`);
+          }
+          _addToCollPickerImage = null;
+          await loadCollections();
+        }, { once: false }); // once:false because we remove it manually
+
       } catch (err) {
         console.error("Failed to add image to collection:", err);
         alert(`Failed to add image to collection: ${String(err)}`);

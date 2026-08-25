@@ -1454,8 +1454,15 @@ def get_duplicate_clusters(folder_path: Path, similarity_threshold: float = 0.95
 
 
 # -------- FAVORITES & COLLECTIONS --------
+# Collections are stored in a single GLOBAL file at BASE_DIR/collections.json
+# so they are visible regardless of which folder(s) are currently selected.
+# image paths stored inside collections are already absolute, so cross-folder
+# membership works without any extra logic.
+GLOBAL_COLLECTIONS_FILE = BASE_DIR / "collections.json"
+
 def _get_collections_file(index_dir: Path) -> Path:
-    return index_dir / "collections.json"
+    # index_dir is kept for backward compat but ignored — always use global file
+    return GLOBAL_COLLECTIONS_FILE
 
 
 def get_collections(folder_path: Path) -> dict:
