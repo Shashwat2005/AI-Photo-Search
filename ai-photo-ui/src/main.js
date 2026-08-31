@@ -2101,8 +2101,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         deduped.push(item);
       }
 
-      // Always sort by score descending first so streaming reveals best matches first
-      const sorted = sortResultsForDisplay(deduped, useQuery ? "relevance" : sortBy);
+      // ── GLOBAL threshold + normalization (multi-folder safe) ──────────────
+      // Python returns raw CLIP cosine scores. Applying threshold and
+      // normalization HERE (after combining) ensures cross-folder fairness:
+      // no folder's images get artificially inflated by per-folder normalization.
+      let finalDeduped = deduped;
+      if (useQuery && deduped.length > 0) {
+        const globalBest = Math.max(...deduped.map(r => r.score || 0));
+        const cutoff = globalBest * _relevanceThreshold;
+        // Apply relative threshold, then normalize all scores to [0,1]
+        finalDeduped = deduped
+          .filter(r => (r.score || 0) >= cutoff)
+          .map(r => ({
+            ...r,
+            _rawScore: r.score,                             // keep original for debug
+            score: globalBest > 0 ? r.score / globalBest : r.score  // 0-1 display score
+          }));
+      }
+
+      // Sort: for query searches always sort by relevance (score desc) first
+      const sorted = sortResultsForDisplay(finalDeduped, useQuery ? "relevance" : sortBy);
 
       if (sorted.length === 0) {
         statusEl.textContent = useQuery
