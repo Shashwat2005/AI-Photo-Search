@@ -929,30 +929,48 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
         # Already normalized from cache — just reshape for FAISS
         query_emb = query_emb.reshape(1, -1)
 
-    # 5. FAISS search — overfetch only when filters are active so we have
-    #    enough headroom after filtering; with no filters top_k is exact.
-    if filters:
-        search_k = min(top_k * 4, index.ntotal)
-    else:
-        search_k = min(top_k, index.ntotal)
+    # 5. FAISS overfetch — always fetch 5× top_k so threshold filtering has
+    #    enough headroom even without explicit filters.
+    search_k = min(top_k * 5, index.ntotal)
     scores, ids = index.search(query_emb, search_k)
 
-    # 6. Build results - use pre-cached mtimes from metadata if available
+    # 6. Build raw candidate list (best score is scores[0][0] after FAISS sort)
+    best_score = float(scores[0][0]) if len(scores[0]) > 0 and ids[0][0] != -1 else 0.0
+
+    # Adaptive threshold logic:
+    #   • Absolute floor 0.12 — never show truly irrelevant images
+    #   • Relative component — keeps results within user-defined % of best match
+    #   • threshold param (min_score from caller) is treated as the relative
+    #     fraction: 0.85 = keep images scoring >= 85% of the best image's score
+    ABSOLUTE_FLOOR = 0.12
+    if threshold is not None and threshold > 0.0:
+        # User-supplied explicit threshold (fraction of best score)
+        relative_cutoff = best_score * float(threshold)
+    else:
+        # Default adaptive: keep results within 80% of the best match
+        relative_cutoff = best_score * 0.80
+
+    effective_threshold = max(ABSOLUTE_FLOOR, relative_cutoff)
+
     results = []
     for score, idx in zip(scores[0], ids[0]):
         if idx == -1:
             continue
-        if threshold is not None and float(score) < threshold:
+        if float(score) < effective_threshold:
             continue
         result_path = metadata[idx]
-        # mtime is not stored in metadata.json, so we stat (could be optimized later)
         try:
             mtime = Path(result_path).stat().st_mtime
         except Exception:
             mtime = 0
+        # Normalize score relative to best (gives 0-1 value where 1.0 = best match)
+        # Clamp to [0, 1] range
+        normalized = float(score) / best_score if best_score > 0 else float(score)
+        normalized = max(0.0, min(1.0, normalized))
         results.append({
             "path": result_path,
-            "score": float(score),
+            "score": normalized,          # relative score (best=1.0)
+            "raw_score": float(score),    # original CLIP cosine similarity
             "mtime": float(mtime),
         })
 

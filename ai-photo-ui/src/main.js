@@ -79,6 +79,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   let _displayedCount = 0;
   const PAGE_SIZE = 20;         // cards revealed per "Load more" click
   const TOP_K_PER_FOLDER = 200; // max results fetched from backend per folder
+  // Progressive streaming: increment on each new search to cancel in-flight streams
+  let _streamSearchId = 0;
+  // Relevance threshold: fraction 0-1 (UI shows 50-100%)
+  let _relevanceThreshold = 0.85;
 
   const searchBtn = document.getElementById("search-btn");
   const selectBtn = document.getElementById("select-folder-btn");
@@ -2029,26 +2033,29 @@ document.addEventListener("DOMContentLoaded", async () => {
     const filters = getFilters();
     const normalizedFolders = [...selectedFolders].sort();
     const mode = useQuery ? "query" : "all";
-    
-    // Create cache key including filters and sort
-    const cacheKey = `${normalizedFolders.join("||")}::${mode}::${query}::${sortBy}::${JSON.stringify(filters || {})}`;
+    // Include threshold in cache key so changing it invalidates cache
+    const cacheKey = `${normalizedFolders.join("||")}::${mode}::${query}::${sortBy}::${JSON.stringify(filters || {})}::t${_relevanceThreshold}`;
 
-    // Try to get from cache first
-    const cachedResult = searchCache.get(cacheKey);
-    if (cachedResult) {
-      console.log("Cache hit for query:", query);
-      _allSearchResults = cachedResult;
-      _displayedCount = 0;
-      await displayResults(_allSearchResults.slice(0, PAGE_SIZE));
-      _displayedCount = Math.min(PAGE_SIZE, _allSearchResults.length);
-      _renderLoadMoreButton();
-      statusEl.textContent = `Found ${cachedResult.length} results (cached)`;
-      return;
+    // Try cache for non-query searches (listing) only —
+    // query results are streamed progressively, cache only after full load
+    if (!useQuery) {
+      const cachedResult = searchCache.get(cacheKey);
+      if (cachedResult) {
+        _allSearchResults = cachedResult;
+        _displayedCount = 0;
+        await displayResults(_allSearchResults.slice(0, PAGE_SIZE));
+        _displayedCount = Math.min(PAGE_SIZE, _allSearchResults.length);
+        _renderLoadMoreButton();
+        statusEl.textContent = `Found ${cachedResult.length} images (cached)`;
+        return;
+      }
     }
 
-    statusEl.textContent = useQuery ? "Searching..." : "Sorting images...";
+    // Cancel any in-flight stream from a previous search
+    const thisSearchId = ++_streamSearchId;
+
+    statusEl.textContent = useQuery ? "Searching…" : "Loading images…";
     resultsGrid.innerHTML = "";
-    // Remove any stale "Load more" button when starting a new search
     const staleBtn = document.getElementById("load-more-btn");
     if (staleBtn) staleBtn.remove();
     _allSearchResults = [];
@@ -2064,7 +2071,8 @@ document.addEventListener("DOMContentLoaded", async () => {
                   query,
                   filters: filters ? JSON.stringify(filters) : null,
                   sortBy,
-                  topK: TOP_K_PER_FOLDER
+                  topK: TOP_K_PER_FOLDER,
+                  minScore: _relevanceThreshold  // ← pass threshold to Python
                 })
               : await invoke("engine_list", {
                   folder,
@@ -2081,40 +2089,78 @@ document.addEventListener("DOMContentLoaded", async () => {
         })
       );
 
+      // Bail if a newer search was started while we were awaiting
+      if (_streamSearchId !== thisSearchId) return;
+
       const combined = perFolderResults.flat();
-      const deduped = [];
       const seenPaths = new Set();
+      const deduped = [];
       for (const item of combined) {
         if (seenPaths.has(item.path)) continue;
         seenPaths.add(item.path);
         deduped.push(item);
       }
 
-      const sorted = sortResultsForDisplay(deduped, sortBy);
-      // Store full result list; display first page only
-      const finalResults = sorted;
+      // Always sort by score descending first so streaming reveals best matches first
+      const sorted = sortResultsForDisplay(deduped, useQuery ? "relevance" : sortBy);
 
-      if (finalResults.length === 0) {
-        statusEl.textContent = "No results found.";
+      if (sorted.length === 0) {
+        statusEl.textContent = useQuery
+          ? `No images matched "${query}" above ${Math.round(_relevanceThreshold * 100)}% relevance. Try lowering the threshold in Filters.`
+          : "No images found.";
         _allSearchResults = [];
         _displayedCount = 0;
         _renderLoadMoreButton();
         return;
       }
 
-      // Cache the full result set
-      searchCache.set(cacheKey, finalResults);
-      _allSearchResults = finalResults;
+      _allSearchResults = sorted;
       _displayedCount = 0;
-      await displayResults(_allSearchResults.slice(0, PAGE_SIZE));
-      _displayedCount = Math.min(PAGE_SIZE, _allSearchResults.length);
-      _renderLoadMoreButton();
-      const shownLabel = _displayedCount < finalResults.length
-        ? `Showing ${_displayedCount} of ${finalResults.length}`
-        : `Found ${finalResults.length}`;
-      statusEl.textContent = useQuery
-        ? `${shownLabel} results from ${selectedFolders.length} folder(s)`
-        : `${shownLabel} images from ${selectedFolders.length} folder(s)`;
+
+      if (!useQuery) {
+        // Non-query browse: batch display, cache result
+        searchCache.set(cacheKey, sorted);
+        await displayResults(sorted.slice(0, PAGE_SIZE));
+        _displayedCount = Math.min(PAGE_SIZE, sorted.length);
+        _renderLoadMoreButton();
+        statusEl.textContent = `${sorted.length} images from ${selectedFolders.length} folder(s)`;
+        return;
+      }
+
+      // ── PROGRESSIVE STREAMING (query searches only) ──────────────────────
+      // Show the first 6 results immediately for instant feedback
+      const FIRST_BATCH  = 6;
+      const STREAM_BATCH = 4;   // cards per wave after the first
+      const STREAM_DELAY = 80;  // ms between waves — keeps UI responsive
+
+      const firstBatch = sorted.slice(0, FIRST_BATCH);
+      await _appendResultsStreaming(firstBatch, true);
+      _displayedCount = firstBatch.length;
+      statusEl.textContent = `Showing ${_displayedCount} of ${sorted.length} results…`;
+
+      // Stream the remaining cards in waves
+      let shown = FIRST_BATCH;
+      while (shown < sorted.length) {
+        // Check cancellation — user started a new search
+        if (_streamSearchId !== thisSearchId) return;
+        await new Promise(r => setTimeout(r, STREAM_DELAY));
+        if (_streamSearchId !== thisSearchId) return;
+
+        const wave = sorted.slice(shown, shown + STREAM_BATCH);
+        await _appendResultsStreaming(wave, false);
+        shown += wave.length;
+        _displayedCount = shown;
+
+        const total = sorted.length;
+        statusEl.textContent = shown < total
+          ? `Streaming… ${shown} of ${total} results`
+          : `Found ${total} result${total !== 1 ? "s" : ""} from ${selectedFolders.length} folder(s)`;
+      }
+
+      // Final status
+      const total = sorted.length;
+      statusEl.textContent = `Found ${total} result${total !== 1 ? "s" : ""} from ${selectedFolders.length} folder(s)`;
+
     } catch (err) {
       console.error(err);
       statusEl.textContent = `Search failed: ${String(err)}`;
@@ -2367,6 +2413,90 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
 
       resultsGrid.appendChild(card);
+    }
+  }
+
+  /**
+   * Like _appendResults but:
+   *  - Adds the .card--stream-in animation for a "flowing in" feel
+   *  - Overlays a score badge (e.g. "97% match") on each card
+   *  - isFirst=true → clears the grid before appending (first wave)
+   *  - isFirst=false → appends to existing grid (subsequent waves)
+   */
+  async function _appendResultsStreaming(results, isFirst = false) {
+    if (isFirst) {
+      _gridObserver.disconnect();
+      resultsGrid.innerHTML = "";
+      selectedImages.clear();
+      updateBulkActionsBar();
+      resultsHeader.style.display = results.length > 0 ? "flex" : "none";
+    }
+
+    for (const item of results) {
+      const card = document.createElement("div");
+      card.className = "card card--stream-in";
+      card.dataset.imagePath = item.path;
+
+      const thumbnailPath = String(item.thumbnail || "");
+      const img = _createLazyImg(thumbnailPath, item.path, () => {
+        if (!img.dataset.fallbackTried && item.path) {
+          img.dataset.fallbackTried = "1";
+          img.dataset.lazySrc = toAssetUrl(item.path);
+          img.src = toAssetUrl(item.path);
+        } else {
+          card.style.opacity = "0.5";
+        }
+      });
+      card.appendChild(img);
+
+      // Score badge — show relative match % (score is 0-1, 1.0 = best match)
+      if (item.score != null) {
+        const pct = Math.round(item.score * 100);
+        const badge = document.createElement("div");
+        badge.className = "score-badge" + (pct >= 95 ? " score-badge--top" : pct >= 80 ? " score-badge--good" : "");
+        badge.textContent = `${pct}%`;
+        badge.title = `${pct}% match relative to best result`;
+        card.appendChild(badge);
+      }
+
+      const overlay = document.createElement("div");
+      overlay.className = "card-overlay";
+
+      const openBtn = document.createElement("button");
+      openBtn.textContent = "Open";
+      openBtn.onclick = (e) => { e.stopPropagation(); openImage(item.path); };
+
+      const similarBtn = document.createElement("button");
+      similarBtn.className = "similar-btn";
+      similarBtn.textContent = "Similar";
+      similarBtn.onclick = (e) => { e.stopPropagation(); searchSimilarImages(item.path); };
+
+      const collectionBtn = document.createElement("button");
+      collectionBtn.className = "collection-btn";
+      collectionBtn.textContent = "Add to Collection";
+      collectionBtn.onclick = (e) => { e.stopPropagation(); addImageToCollection(item.path); };
+
+      overlay.appendChild(openBtn);
+      overlay.appendChild(similarBtn);
+      overlay.appendChild(collectionBtn);
+      card.appendChild(overlay);
+
+      card.addEventListener("click", (e) => {
+        if (e.target === img || e.target === card) {
+          e.stopPropagation();
+          const idx = _allSearchResults.findIndex(r => r.path === item.path);
+          openLightbox(idx >= 0 ? idx : 0);
+        }
+      });
+
+      resultsGrid.appendChild(card);
+    }
+
+    // Update results header count
+    if (resultsHeader) {
+      const total = _allSearchResults.length;
+      resultsCountLabel.textContent = `${total} result${total !== 1 ? "s" : ""}`;
+      resultsHeader.style.display = total > 0 ? "flex" : "none";
     }
   }
 
@@ -2772,7 +2902,30 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   queryInput.addEventListener("change", updatePinButton);
-  
+
+  // Relevance threshold slider
+  const thresholdSlider = document.getElementById("relevance-threshold");
+  const thresholdLabel  = document.getElementById("threshold-pct-label");
+  const thresholdDesc   = document.getElementById("threshold-desc");
+  if (thresholdSlider) {
+    thresholdSlider.addEventListener("input", () => {
+      const pct = parseInt(thresholdSlider.value, 10);
+      _relevanceThreshold = pct / 100;
+      if (thresholdLabel) thresholdLabel.textContent = `${pct}%`;
+      if (thresholdDesc) {
+        if (pct >= 95) {
+          thresholdDesc.textContent = `Very strict — only the closest matches (top ~5%) will appear`;
+        } else if (pct >= 85) {
+          thresholdDesc.textContent = `Show images scoring ≥ ${pct}% as relevant as the best match`;
+        } else if (pct >= 70) {
+          thresholdDesc.textContent = `Relaxed — shows a broader range of related images (≥ ${pct}%)`;
+        } else {
+          thresholdDesc.textContent = `Loose — shows any image with some relevance to the query (≥ ${pct}%)`;
+        }
+      }
+    });
+  }
+
   // Trigger search when filter/sort changes (if there is enough context)
   sortSelect.addEventListener("change", () => {
     if (selectedFolders.length === 0) {

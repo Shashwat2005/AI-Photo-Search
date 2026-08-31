@@ -421,6 +421,7 @@ fn engine_search(
     filters: Option<String>,
     sort_by: Option<String>,
     top_k: Option<u32>,
+    min_score: Option<f64>,
 ) -> Result<Value, String> {
     let key = search_cache_key(
         &folder,
@@ -439,13 +440,15 @@ fn engine_search(
     let filters_json = filters.as_deref().unwrap_or("{}");
     let sort_value = sort_by.as_deref().unwrap_or("relevance");
     let top_k_str = top_k.unwrap_or(5).to_string();
+    // Pass user threshold (0-1 relative fraction) to Python; 0.0 = use adaptive default
+    let min_score_val = min_score.unwrap_or(0.0);
 
     // Use daemon for fast search (persistent CLIP model)
     let args = serde_json::json!({
         "folder": folder,
         "query": query,
         "top_k": top_k.unwrap_or(5),
-        "min_score": 0.0,
+        "min_score": min_score_val,
         "filters": filters_json,
         "sort_by": sort_value,
     });
@@ -457,7 +460,7 @@ fn engine_search(
                 &folder,
                 Some(&query),
                 Some(&top_k_str),
-                Some("0"),
+                Some(&min_score_val.to_string()),
                 Some(filters_json),
                 Some(sort_value),
             )

@@ -51,6 +51,24 @@
     <button id="toggle-filters-btn" style="display: none;">Hide Filters</button>
 
     <div id="filters-container" class="filters-container" style="display: none;">
+      <!-- Relevance Threshold — most impactful filter, shown first -->
+      <div class="filter-section filter-section--threshold">
+        <label for="relevance-threshold">
+          🎯 Relevance Threshold:
+          <span id="threshold-pct-label" class="threshold-pct-label">85%</span>
+        </label>
+        <div class="threshold-slider-row">
+          <span class="threshold-hint">Strict</span>
+          <input id="relevance-threshold" type="range"
+                 min="50" max="100" step="1" value="85"
+                 title="Only show images that score this % of the best match" />
+          <span class="threshold-hint">Loose</span>
+        </div>
+        <div class="threshold-desc" id="threshold-desc">
+          Show only images scoring ≥ 85% as relevant as the best match
+        </div>
+      </div>
+
       <div class="filter-section">
         <label>Sort By:</label>
         <select id="sort-select">

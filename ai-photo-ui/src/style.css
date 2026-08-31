@@ -529,7 +529,86 @@ button:hover {
   background: #6d28d9;
 }
 
-/* Offline Indicator */
+/* ── Progressive stream-in animation ── */
+@keyframes cardStreamIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.card--stream-in {
+  animation: cardStreamIn 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* ── Score badge (relative match %) ── */
+.score-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: rgba(55, 65, 81, 0.82);
+  color: #e5e7eb;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 10px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+  z-index: 2;
+  transition: opacity 0.15s;
+}
+.card:hover .score-badge {
+  opacity: 0;  /* hide badge when overlay is visible */
+}
+.score-badge--top {
+  background: rgba(16, 185, 129, 0.90);   /* emerald — excellent match */
+  color: #fff;
+}
+.score-badge--good {
+  background: rgba(59, 130, 246, 0.88);   /* blue — good match */
+  color: #fff;
+}
+
+/* ── Threshold filter section ── */
+.filter-section--threshold {
+  grid-column: 1 / -1;  /* full width */
+  background: linear-gradient(135deg, #eff6ff, #f0fdf4);
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  padding: 10px 14px 8px;
+}
+.threshold-pct-label {
+  font-weight: 700;
+  color: #1d4ed8;
+  margin-left: 4px;
+}
+.threshold-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 4px;
+}
+.threshold-slider-row input[type=range] {
+  flex: 1;
+  accent-color: #3b82f6;
+  cursor: pointer;
+}
+.threshold-hint {
+  font-size: 10px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+.threshold-desc {
+  font-size: 11px;
+  color: #374151;
+  margin-top: 2px;
+  font-style: italic;
+}
+
 .offline-indicator {
   background-color: #dc3545;
   color: white;
