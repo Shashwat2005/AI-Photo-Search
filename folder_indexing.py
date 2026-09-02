@@ -460,7 +460,7 @@ def index_images_from_folder(folder_path: Path, on_progress=None):
                         batch_images.append(img.convert("RGB"))
                     valid_batch_paths.append(path_str)
                 except Exception as e:
-                    print(f"Skipping {path_str}: {e}", file=__import__('sys').stderr, flush=True)
+                    print(f"Skipping {path_str}: {e}", file=sys.stderr, flush=True)
                     processed_files[path_str] = "failed"
 
             if batch_images:
@@ -477,7 +477,7 @@ def index_images_from_folder(folder_path: Path, on_progress=None):
                         processed_files[path_str] = "success"
 
                 except Exception as e:
-                    print(f"Batch embedding failed: {e}", file=__import__('sys').stderr, flush=True)
+                    print(f"Batch embedding failed: {e}", file=sys.stderr, flush=True)
                     for path_str in valid_batch_paths:
                         processed_files[path_str] = "failed"
 
@@ -1117,7 +1117,7 @@ def cleanup_orphaned_embeddings(folder_path: Path) -> dict:
                     result["deleted"] += 1
                     result["size_freed_mb"] += size / (1024 * 1024)
                 except Exception as e:
-                    print(f"Failed to delete orphaned embedding {emb_file}: {e}", file=__import__('sys').stderr, flush=True)
+                    print(f"Failed to delete orphaned embedding {emb_file}: {e}", file=sys.stderr, flush=True)
     
     except Exception as e:
         result["error"] = str(e)
@@ -1183,7 +1183,7 @@ def compact_index(folder_path: Path) -> dict:
                 valid_metadata.append(path)
                 new_files[path] = file_info
             except Exception as e:
-                print(f"Skipping {path}: {e}", file=__import__('sys').stderr, flush=True)
+                print(f"Skipping {path}: {e}", file=sys.stderr, flush=True)
                 continue
         
         if not vectors:

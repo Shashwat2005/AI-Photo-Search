@@ -439,11 +439,15 @@ fn engine_search(
 
     let filters_json = filters.as_deref().unwrap_or("{}");
     let sort_value = sort_by.as_deref().unwrap_or("relevance");
-    let top_k_str = top_k.unwrap_or(5).to_string();
     // Pass user threshold (0-1 relative fraction) to Python; 0.0 = use adaptive default
     let min_score_val = min_score.unwrap_or(0.0);
 
-    // Use daemon for fast search (persistent CLIP model)
+    // Use daemon for fast search (persistent CLIP model).
+    // NOTE: Do NOT use .or_else() subprocess fallback here. If call_daemon fails
+    // (e.g., parse error), the daemon's stdout buffer still has the unread
+    // response for this request. Falling back to a subprocess leaves that
+    // stale data in the buffer — the NEXT folder's call_daemon reads it instead
+    // of the new response, causing stream desynchronization (only 1 folder shows).
     let args = serde_json::json!({
         "folder": folder,
         "query": query,
@@ -452,19 +456,7 @@ fn engine_search(
         "filters": filters_json,
         "sort_by": sort_value,
     });
-    let response = call_daemon("search", args)
-        .or_else(|_| {
-            // Subprocess fallback if daemon unavailable
-            run_engine(
-                "search",
-                &folder,
-                Some(&query),
-                Some(&top_k_str),
-                Some(&min_score_val.to_string()),
-                Some(filters_json),
-                Some(sort_value),
-            )
-        })?;
+    let response = call_daemon("search", args)?;
 
     if let Ok(mut cache) = search_cache().lock() {
         cache.insert(key, response.clone());
