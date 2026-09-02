@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from functools import partial
 from collections import OrderedDict
@@ -459,7 +460,7 @@ def index_images_from_folder(folder_path: Path, on_progress=None):
                         batch_images.append(img.convert("RGB"))
                     valid_batch_paths.append(path_str)
                 except Exception as e:
-                    print(f"Skipping {path_str}: {e}")
+                    print(f"Skipping {path_str}: {e}", file=__import__('sys').stderr, flush=True)
                     processed_files[path_str] = "failed"
 
             if batch_images:
@@ -476,7 +477,7 @@ def index_images_from_folder(folder_path: Path, on_progress=None):
                         processed_files[path_str] = "success"
 
                 except Exception as e:
-                    print(f"Batch embedding failed: {e}")
+                    print(f"Batch embedding failed: {e}", file=__import__('sys').stderr, flush=True)
                     for path_str in valid_batch_paths:
                         processed_files[path_str] = "failed"
 
@@ -952,31 +953,20 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
     search_k = min(top_k * 5, index.ntotal)
     scores, ids = index.search(query_emb, search_k)
 
-    # 6. Compute absolute CLIP score threshold.
-    #    The threshold param (from the user's slider, 0.5–1.0 fraction) maps to:
-    #      0.50 → 0.17 CLIP minimum  (loose — shows most results above noise)
-    #      0.85 → 0.22 CLIP minimum  (default — filters random screenshots)
-    #      1.00 → 0.30 CLIP minimum  (strict — only excellent matches)
-    #
-    #    Formula: clip_min = 0.17 + max(0, t - 0.5) / 0.5 × 0.13
-    #    This means: if a folder has NO relevant images for the query, ALL its
-    #    images score below the minimum → 0 results → correct "no match" behavior.
-    CLIP_RANGE_LO = 0.17  # just above CLIP noise/random baseline
-    CLIP_RANGE_HI = 0.30  # excellent text-image CLIP match
-
-    if threshold is not None and threshold > 0:
-        t = float(threshold)
-        clip_min = CLIP_RANGE_LO + max(0.0, (t - 0.5)) / 0.5 * (CLIP_RANGE_HI - CLIP_RANGE_LO)
-    else:
-        clip_min = 0.20  # conservative default (no slider value from caller)
+    # 6. Fixed noise floor — not user-controllable.
+    #    CLIP cosine similarity below 0.20 is essentially random baseline
+    #    for most text queries. Results above 0.20 represent "some relevance."
+    #    The UI "Show more" button handles quality tiers — Python returns ALL
+    #    results above this floor, sorted by score descending.
+    CLIP_NOISE_FLOOR = 0.20
 
     results = []
     for score, idx in zip(scores[0], ids[0]):
         if idx == -1:
             continue
         raw = float(score)
-        if raw < clip_min:
-            continue  # below absolute CLIP threshold → truly irrelevant
+        if raw < CLIP_NOISE_FLOOR:
+            continue  # truly irrelevant noise
         result_path = metadata[idx]
         try:
             mtime = Path(result_path).stat().st_mtime
@@ -984,7 +974,7 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
             mtime = 0
         results.append({
             "path": result_path,
-            "score": raw,      # raw CLIP cosine similarity — JS calibrates for display
+            "score": raw,      # raw CLIP cosine similarity -- JS calibrates for display
             "mtime": float(mtime),
         })
 
@@ -1127,7 +1117,7 @@ def cleanup_orphaned_embeddings(folder_path: Path) -> dict:
                     result["deleted"] += 1
                     result["size_freed_mb"] += size / (1024 * 1024)
                 except Exception as e:
-                    print(f"Failed to delete orphaned embedding {emb_file}: {e}")
+                    print(f"Failed to delete orphaned embedding {emb_file}: {e}", file=__import__('sys').stderr, flush=True)
     
     except Exception as e:
         result["error"] = str(e)
@@ -1193,7 +1183,7 @@ def compact_index(folder_path: Path) -> dict:
                 valid_metadata.append(path)
                 new_files[path] = file_info
             except Exception as e:
-                print(f"Skipping {path}: {e}")
+                print(f"Skipping {path}: {e}", file=__import__('sys').stderr, flush=True)
                 continue
         
         if not vectors:

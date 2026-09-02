@@ -74,15 +74,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   let indexQueueCancelled = false;
   const indexQueueState = new Map();
   let currentDuplicateGroups = []; // Stores loaded duplicate groups for deletion
-  // F2: Pagination state — full result list vs what's displayed
+  // F2: Pagination state -- full result list vs what's displayed
   let _allSearchResults = [];
   let _displayedCount = 0;
-  const PAGE_SIZE = 20;         // cards revealed per "Load more" click
-  const TOP_K_PER_FOLDER = 200; // max results fetched from backend per folder
+  const PAGE_SIZE = 20;               // cards revealed per "Show more" click
+  const INITIAL_STREAM_LIMIT = 30;    // max results shown on first search
+  const TOP_K_PER_FOLDER = 200;       // max results fetched from backend per folder
   // Progressive streaming: increment on each new search to cancel in-flight streams
   let _streamSearchId = 0;
-  // Relevance threshold: fraction 0-1 (UI shows 50-100%)
-  let _relevanceThreshold = 0.85;
+  // Track whether the last search used a text query (for end-state messaging)
+  let _lastSearchWasQuery = false;
+  let _lastSearchQuery = "";
 
   const searchBtn = document.getElementById("search-btn");
   const selectBtn = document.getElementById("select-folder-btn");
@@ -2033,8 +2035,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const filters = getFilters();
     const normalizedFolders = [...selectedFolders].sort();
     const mode = useQuery ? "query" : "all";
-    // Include threshold in cache key so changing it invalidates cache
-    const cacheKey = `${normalizedFolders.join("||")}::${mode}::${query}::${sortBy}::${JSON.stringify(filters || {})}::t${_relevanceThreshold}`;
+    // Cache key: folders + mode + query + sort + filters
+    const cacheKey = `${normalizedFolders.join("||")}::${mode}::${query}::${sortBy}::${JSON.stringify(filters || {})}`;
 
     // Try cache for non-query searches (listing) only —
     // query results are streamed progressively, cache only after full load
@@ -2063,7 +2065,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     try {
       console.log(`[SEARCH] Folders: ${selectedFolders.length}`, selectedFolders);
-      console.log(`[SEARCH] query="${query}", threshold=${_relevanceThreshold}, topK=${TOP_K_PER_FOLDER}`);
+      console.log(`[SEARCH] query="${query}", topK=${TOP_K_PER_FOLDER}`);
 
       const perFolderResults = await Promise.all(
         selectedFolders.map(async (folder) => {
@@ -2074,8 +2076,8 @@ document.addEventListener("DOMContentLoaded", async () => {
                   query,
                   filters: filters ? JSON.stringify(filters) : null,
                   sortBy,
-                  topK: TOP_K_PER_FOLDER,
-                  minScore: _relevanceThreshold  // ← pass threshold to Python
+                  topK: TOP_K_PER_FOLDER
+                  // No minScore: Python uses its own fixed noise floor (0.20 CLIP)
                 })
               : await invoke("engine_list", {
                   folder,
@@ -2140,7 +2142,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (sorted.length === 0) {
         statusEl.textContent = useQuery
-          ? `No images matched "${query}" above ${Math.round(_relevanceThreshold * 100)}% relevance. Try lowering the threshold in Filters.`
+          ? `No images found matching "${query}". Try a different search term or check that your folders are indexed.`
           : "No images found.";
         _allSearchResults = [];
         _displayedCount = 0;
@@ -2161,21 +2163,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
-      // ── PROGRESSIVE STREAMING (query searches only) ──────────────────────
-      // Show the first 6 results immediately for instant feedback
+      // Track search context for end-state message
+      _lastSearchWasQuery = useQuery;
+      _lastSearchQuery = query;
+
+      // -- PROGRESSIVE STREAMING (query searches only) --
+      // Stream first INITIAL_STREAM_LIMIT results immediately, then
+      // let the user click "Show more" for additional lower-scoring results.
       const FIRST_BATCH  = 6;
       const STREAM_BATCH = 4;   // cards per wave after the first
-      const STREAM_DELAY = 80;  // ms between waves — keeps UI responsive
+      const STREAM_DELAY = 80;  // ms between waves
+      const streamUpTo   = Math.min(sorted.length, INITIAL_STREAM_LIMIT);
 
       const firstBatch = sorted.slice(0, FIRST_BATCH);
       await _appendResultsStreaming(firstBatch, true);
       _displayedCount = firstBatch.length;
-      statusEl.textContent = `Showing ${_displayedCount} of ${sorted.length} results…`;
+      statusEl.textContent = `Showing ${_displayedCount} of ${sorted.length} result${sorted.length !== 1 ? "s" : ""}...`;
 
-      // Stream the remaining cards in waves
+      // Stream remaining cards up to INITIAL_STREAM_LIMIT
       let shown = FIRST_BATCH;
-      while (shown < sorted.length) {
-        // Check cancellation — user started a new search
+      while (shown < streamUpTo) {
         if (_streamSearchId !== thisSearchId) return;
         await new Promise(r => setTimeout(r, STREAM_DELAY));
         if (_streamSearchId !== thisSearchId) return;
@@ -2184,16 +2191,17 @@ document.addEventListener("DOMContentLoaded", async () => {
         await _appendResultsStreaming(wave, false);
         shown += wave.length;
         _displayedCount = shown;
-
-        const total = sorted.length;
-        statusEl.textContent = shown < total
-          ? `Streaming… ${shown} of ${total} results`
-          : `Found ${total} result${total !== 1 ? "s" : ""} from ${selectedFolders.length} folder(s)`;
+        statusEl.textContent = shown < streamUpTo
+          ? `Loading... ${shown} of ${streamUpTo}`
+          : `Found ${sorted.length} match${sorted.length !== 1 ? "es" : ""} -- showing top ${shown}`;
       }
 
+      // Show "Show more" button for remaining results
+      _displayedCount = streamUpTo;
+      _renderLoadMoreButton();
+
       // Final status
-      const total = sorted.length;
-      statusEl.textContent = `Found ${total} result${total !== 1 ? "s" : ""} from ${selectedFolders.length} folder(s)`;
+      statusEl.textContent = `Found ${sorted.length} match${sorted.length !== 1 ? "es" : ""} from ${selectedFolders.length} folder(s)`;
 
     } catch (err) {
       console.error(err);
@@ -2201,33 +2209,50 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  /** Renders (or removes) the "Load more" button below the results grid. */
+  /** Renders the "Show more" button (or an end-of-results message) below the grid. */
   function _renderLoadMoreButton() {
+    // Remove any existing button or end message
     const existing = document.getElementById("load-more-btn");
     if (existing) existing.remove();
+    const existingMsg = document.getElementById("no-more-results-msg");
+    if (existingMsg) existingMsg.remove();
 
     const remaining = _allSearchResults.length - _displayedCount;
-    if (remaining <= 0) return;
 
-    const btn = document.createElement("button");
-    btn.id = "load-more-btn";
-    btn.className = "load-more-btn";
-    btn.textContent = `Load ${Math.min(PAGE_SIZE, remaining)} more  (${remaining} remaining)`;
-    btn.onclick = async () => {
-      btn.disabled = true;
-      btn.textContent = "Loading…";
-      const next = _allSearchResults.slice(_displayedCount, _displayedCount + PAGE_SIZE);
-      // Append cards without clearing the grid
-      await _appendResults(next);
-      _displayedCount += next.length;
-      _renderLoadMoreButton(); // re-render with updated count
-      const sortBy = sortSelect.value;
-      const shownLabel = _displayedCount < _allSearchResults.length
-        ? `Showing ${_displayedCount} of ${_allSearchResults.length}`
-        : `Found ${_allSearchResults.length}`;
-      statusEl.textContent = `${shownLabel} results`;
-    };
-    resultsGrid.after(btn);
+    if (remaining > 0) {
+      // More results available -- show "Show more" button
+      const btn = document.createElement("button");
+      btn.id = "load-more-btn";
+      btn.className = "load-more-btn";
+      const nextCount = Math.min(PAGE_SIZE, remaining);
+      btn.textContent = "Show " + nextCount + " more matching image" + (nextCount !== 1 ? "s" : "") + " (" + remaining + " remaining)";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = "Loading...";
+        const next = _allSearchResults.slice(_displayedCount, _displayedCount + PAGE_SIZE);
+        await _appendResults(next);
+        _displayedCount += next.length;
+        _renderLoadMoreButton();
+        const shownLabel = _displayedCount < _allSearchResults.length
+          ? `Showing ${_displayedCount} of ${_allSearchResults.length}`
+          : `Showing all ${_allSearchResults.length}`;
+        statusEl.textContent = shownLabel + " match" + (_allSearchResults.length !== 1 ? "es" : "");
+      };
+      resultsGrid.after(btn);
+
+    } else if (_allSearchResults.length > 0) {
+      // All results exhausted -- show friendly end-of-results message
+      const msg = document.createElement("div");
+      msg.id = "no-more-results-msg";
+      msg.className = "no-more-results-msg";
+      const total = _allSearchResults.length;
+      if (_lastSearchWasQuery && _lastSearchQuery) {
+        msg.innerHTML = "All <strong>" + total + "</strong> matching image" + (total !== 1 ? "s" : "") + " shown &mdash; no more found for <em>&ldquo;" + _lastSearchQuery + "&rdquo;</em>";
+      } else {
+        msg.innerHTML = "All <strong>" + total + "</strong> image" + (total !== 1 ? "s" : "") + " displayed";
+      }
+      resultsGrid.after(msg);
+    }
   }
 
   function sortResultsForDisplay(results, sortBy) {
@@ -2952,31 +2977,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   queryInput.addEventListener("change", updatePinButton);
 
-  // Relevance threshold slider
-  const thresholdSlider = document.getElementById("relevance-threshold");
-  const thresholdLabel  = document.getElementById("threshold-pct-label");
-  const thresholdDesc   = document.getElementById("threshold-desc");
-  if (thresholdSlider) {
-    thresholdSlider.addEventListener("input", () => {
-      const pct = parseInt(thresholdSlider.value, 10);
-      _relevanceThreshold = pct / 100;
-      // Compute the actual absolute CLIP minimum (mirrors Python logic)
-      const t = _relevanceThreshold;
-      const clipMin = (0.17 + Math.max(0, (t - 0.5)) / 0.5 * (0.30 - 0.17)).toFixed(2);
-      if (thresholdLabel) thresholdLabel.textContent = `${pct}%`;
-      if (thresholdDesc) {
-        if (pct >= 95) {
-          thresholdDesc.textContent = `Very strict — only excellent matches (CLIP ≥ ${clipMin}). Folders without relevant images return 0 results.`;
-        } else if (pct >= 80) {
-          thresholdDesc.textContent = `Moderate — filters random screenshots, shows good matches (CLIP ≥ ${clipMin})`;
-        } else if (pct >= 65) {
-          thresholdDesc.textContent = `Relaxed — shows a broader range of related images (CLIP ≥ ${clipMin})`;
-        } else {
-          thresholdDesc.textContent = `Loose — shows most images above noise level (CLIP ≥ ${clipMin}). May include less relevant results.`;
-        }
-      }
-    });
-  }
+  // Note: relevance threshold slider removed — the AI automatically determines
+  // image quality using a fixed CLIP noise floor (0.20). Results are shown in
+  // decreasing order of match quality, with "Show more" for additional results.
 
   // Trigger search when filter/sort changes (if there is enough context)
   sortSelect.addEventListener("change", () => {
