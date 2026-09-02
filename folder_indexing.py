@@ -46,6 +46,11 @@ _QUERY_RESULT_CACHE = OrderedDict()
 _QUERY_RESULT_CACHE_LOCK = threading.Lock()
 _MAX_QUERY_RESULT_CACHE_SIZE = 500
 
+# Cache format version — increment whenever the score format or result schema changes.
+# This invalidates ALL on-disk and in-memory caches from old formats automatically.
+# v3 = raw CLIP cosine scores (not normalized), absolute threshold applied in Python.
+_SCORE_FORMAT_VERSION = 3
+
 
 def get_model():
     global _MODEL
@@ -889,24 +894,37 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
     threshold = None if min_score is None else float(min_score)
 
     index_sig = _index_signature(index_file, metadata_file)
-    # Prefix cache key with index_dir so the shared in-memory cache is
-    # scoped per-folder. Without this, Folder A's cached results are
-    # incorrectly returned for identical queries in Folder B.
+    # Cache key includes:
+    #   - folder prefix (scopes cache per folder)
+    #   - score format version (invalidates old cache entries on format change)
+    #   - query, top_k, threshold, filters, sort
     folder_prefix = str(index_dir)
-    cache_key = f"{folder_prefix}|q={normalized_query}|k={top_k}|s={threshold}|f={json.dumps(filters or {})}|o={sort_by}"
+    cache_key = (
+        f"v{_SCORE_FORMAT_VERSION}|{folder_prefix}"
+        f"|q={normalized_query}|k={top_k}|s={threshold}"
+        f"|f={json.dumps(filters or {})}|o={sort_by}"
+    )
 
     # 1. Check in-memory query result cache (fastest - no disk I/O)
     cached_result = _get_cached_query_result(cache_key)
     if cached_result is not None:
-        return cached_result
+        # Sanity-check: raw CLIP cosine scores must be in [0.0, 0.65].
+        # Old cached results used normalized scores (0.9-1.0) which would
+        # produce 100% badges. Reject silently so a fresh search runs.
+        if all(0.0 <= r.get("score", 0) <= 0.65 for r in cached_result):
+            return cached_result
+        # else: stale format in memory cache — fall through to recompute
 
     # 2. Check on-disk query cache (persistent across restarts)
     cache = _load_query_cache(index_dir)
     if cache.get("index_signature") == index_sig:
         cached = cache.get("entries", {}).get(cache_key)
-        if isinstance(cached, list):
-            _put_query_result_in_cache(cache_key, cached)
-            return cached
+        if isinstance(cached, list) and cached:
+            # Validate score format — raw CLIP scores must be in [0.0, 0.65]
+            if all(0.0 <= r.get("score", 0) <= 0.65 for r in cached):
+                _put_query_result_in_cache(cache_key, cached)
+                return cached
+            # else: old format on disk — fall through to recompute fresh results
 
     # 3. Get FAISS index + metadata from in-memory cache (avoids disk reads)
     cached_index_meta = _get_index_from_cache(index_dir)
@@ -934,20 +952,31 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
     search_k = min(top_k * 5, index.ntotal)
     scores, ids = index.search(query_emb, search_k)
 
-    # 6. Apply only an absolute floor — keeps truly irrelevant images out.
-    #    The relative threshold (user's 85% slider) is applied in JS AFTER
-    #    combining results from ALL folders, so cross-folder ranking is fair.
-    #    Per-folder normalization is intentionally NOT done here to avoid
-    #    artificially inflating scores from folders with poor matches.
-    ABSOLUTE_FLOOR = 0.15  # empirically: CLIP scores below 0.15 are near-random
+    # 6. Compute absolute CLIP score threshold.
+    #    The threshold param (from the user's slider, 0.5–1.0 fraction) maps to:
+    #      0.50 → 0.17 CLIP minimum  (loose — shows most results above noise)
+    #      0.85 → 0.22 CLIP minimum  (default — filters random screenshots)
+    #      1.00 → 0.30 CLIP minimum  (strict — only excellent matches)
+    #
+    #    Formula: clip_min = 0.17 + max(0, t - 0.5) / 0.5 × 0.13
+    #    This means: if a folder has NO relevant images for the query, ALL its
+    #    images score below the minimum → 0 results → correct "no match" behavior.
+    CLIP_RANGE_LO = 0.17  # just above CLIP noise/random baseline
+    CLIP_RANGE_HI = 0.30  # excellent text-image CLIP match
+
+    if threshold is not None and threshold > 0:
+        t = float(threshold)
+        clip_min = CLIP_RANGE_LO + max(0.0, (t - 0.5)) / 0.5 * (CLIP_RANGE_HI - CLIP_RANGE_LO)
+    else:
+        clip_min = 0.20  # conservative default (no slider value from caller)
 
     results = []
     for score, idx in zip(scores[0], ids[0]):
         if idx == -1:
             continue
         raw = float(score)
-        if raw < ABSOLUTE_FLOOR:
-            continue  # truly irrelevant, skip
+        if raw < clip_min:
+            continue  # below absolute CLIP threshold → truly irrelevant
         result_path = metadata[idx]
         try:
             mtime = Path(result_path).stat().st_mtime
@@ -955,7 +984,7 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
             mtime = 0
         results.append({
             "path": result_path,
-            "score": raw,      # raw CLIP cosine similarity — JS normalises globally
+            "score": raw,      # raw CLIP cosine similarity — JS calibrates for display
             "mtime": float(mtime),
         })
 

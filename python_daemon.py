@@ -123,6 +123,8 @@ def dispatch(command: str, args: dict) -> dict:
             sort_by=sort_by,
         )
         _attach_thumbnails(results, folder)
+        import sys
+        print(f"[DAEMON-SEARCH] folder={folder!r} query={query!r} results={len(results)}", file=sys.stderr, flush=True)
         return _ok({"query": query, "results": results})
 
     # ---- list ----

@@ -58,14 +58,14 @@
           <span id="threshold-pct-label" class="threshold-pct-label">85%</span>
         </label>
         <div class="threshold-slider-row">
-          <span class="threshold-hint">Strict</span>
+          <span class="threshold-hint">Loose</span>
           <input id="relevance-threshold" type="range"
                  min="50" max="100" step="1" value="85"
-                 title="Only show images that score this % of the best match" />
-          <span class="threshold-hint">Loose</span>
+                 title="Higher = stricter: only show images with high CLIP similarity" />
+          <span class="threshold-hint">Strict</span>
         </div>
         <div class="threshold-desc" id="threshold-desc">
-          Show only images scoring ≥ 85% as relevant as the best match
+          Moderate — filters random images, shows good matches (CLIP ≥ 0.22)
         </div>
       </div>
 

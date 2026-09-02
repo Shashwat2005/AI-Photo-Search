@@ -2062,6 +2062,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     _displayedCount = 0;
 
     try {
+      console.log(`[SEARCH] Folders: ${selectedFolders.length}`, selectedFolders);
+      console.log(`[SEARCH] query="${query}", threshold=${_relevanceThreshold}, topK=${TOP_K_PER_FOLDER}`);
+
       const perFolderResults = await Promise.all(
         selectedFolders.map(async (folder) => {
           try {
@@ -2092,7 +2095,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       // Bail if a newer search was started while we were awaiting
       if (_streamSearchId !== thisSearchId) return;
 
+      // ── DIAGNOSTIC: log per-folder result counts
+      perFolderResults.forEach((res, i) => {
+        console.log(`[SEARCH] Folder[${i}] "${selectedFolders[i]}" → ${res.length} results`);
+      });
+
       const combined = perFolderResults.flat();
+      console.log(`[SEARCH] Combined: ${combined.length} total`);
+
       const seenPaths = new Set();
       const deduped = [];
       for (const item of combined) {
@@ -2100,23 +2110,29 @@ document.addEventListener("DOMContentLoaded", async () => {
         seenPaths.add(item.path);
         deduped.push(item);
       }
+      console.log(`[SEARCH] Deduped: ${deduped.length}`);
 
-      // ── GLOBAL threshold + normalization (multi-folder safe) ──────────────
-      // Python returns raw CLIP cosine scores. Applying threshold and
-      // normalization HERE (after combining) ensures cross-folder fairness:
-      // no folder's images get artificially inflated by per-folder normalization.
+      // ── Calibrate scores to absolute CLIP range for display ───────────────────
+      // Python already filtered by absolute CLIP minimum per-folder.
+      // Here we only calibrate scores to a meaningful 0–100% display range.
+      //
+      // CLIP cosine similarity calibration:
+      //   0.17 = noise/random baseline → 0%
+      //   0.35 = excellent match → 100%
+      // This means irrelevant images that barely pass the threshold show ~5%,
+      // while strong matches show 80–100% — giving the user accurate signal.
+      const CLIP_DISPLAY_LO = 0.17;
+      const CLIP_DISPLAY_HI = 0.35;
       let finalDeduped = deduped;
       if (useQuery && deduped.length > 0) {
-        const globalBest = Math.max(...deduped.map(r => r.score || 0));
-        const cutoff = globalBest * _relevanceThreshold;
-        // Apply relative threshold, then normalize all scores to [0,1]
-        finalDeduped = deduped
-          .filter(r => (r.score || 0) >= cutoff)
-          .map(r => ({
-            ...r,
-            _rawScore: r.score,                             // keep original for debug
-            score: globalBest > 0 ? r.score / globalBest : r.score  // 0-1 display score
-          }));
+        finalDeduped = deduped.map(r => {
+          const raw = r.score || 0;
+          const displayScore = Math.max(0, Math.min(1,
+            (raw - CLIP_DISPLAY_LO) / (CLIP_DISPLAY_HI - CLIP_DISPLAY_LO)
+          ));
+          return { ...r, _rawScore: raw, score: displayScore };
+        });
+        console.log(`[SEARCH] Score calibrated: ${finalDeduped.length} results across ${selectedFolders.length} folder(s)`);
       }
 
       // Sort: for query searches always sort by relevance (score desc) first
@@ -2467,14 +2483,29 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
       card.appendChild(img);
 
-      // Score badge — show relative match % (score is 0-1, 1.0 = best match)
+      // Score badge — calibrated to absolute CLIP range [0.17=0%, 0.35=100%]
+      // item.score is the calibrated display score (0–1) set in the search pipeline.
+      // Defensive guard: if score > 0.65 it's an old normalized format — re-calibrate.
       if (item.score != null) {
-        const pct = Math.round(item.score * 100);
-        const badge = document.createElement("div");
-        badge.className = "score-badge" + (pct >= 95 ? " score-badge--top" : pct >= 80 ? " score-badge--good" : "");
-        badge.textContent = `${pct}%`;
-        badge.title = `${pct}% match relative to best result`;
-        card.appendChild(badge);
+        let displayScore = item.score;
+        if (displayScore > 0.65) {
+          // Old format: score was normalized to folder-best (0.9–1.0 range).
+          // Use _rawScore if present, otherwise clamp the display score.
+          const raw = item._rawScore != null ? item._rawScore : null;
+          if (raw != null) {
+            displayScore = Math.max(0, Math.min(1, (raw - 0.17) / (0.35 - 0.17)));
+          } else {
+            displayScore = 0;  // unknown raw → don't show misleading 100%
+          }
+        }
+        const pct = Math.round(displayScore * 100);
+        if (pct > 0) {  // skip badge for 0% (no useful info to show)
+          const badge = document.createElement("div");
+          badge.className = "score-badge" + (pct >= 90 ? " score-badge--top" : pct >= 60 ? " score-badge--good" : "");
+          badge.textContent = `${pct}%`;
+          badge.title = `CLIP match quality: ${pct}% (0%=noise, 100%=excellent)`;
+          card.appendChild(badge);
+        }
       }
 
       const overlay = document.createElement("div");
@@ -2929,16 +2960,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     thresholdSlider.addEventListener("input", () => {
       const pct = parseInt(thresholdSlider.value, 10);
       _relevanceThreshold = pct / 100;
+      // Compute the actual absolute CLIP minimum (mirrors Python logic)
+      const t = _relevanceThreshold;
+      const clipMin = (0.17 + Math.max(0, (t - 0.5)) / 0.5 * (0.30 - 0.17)).toFixed(2);
       if (thresholdLabel) thresholdLabel.textContent = `${pct}%`;
       if (thresholdDesc) {
         if (pct >= 95) {
-          thresholdDesc.textContent = `Very strict — only the closest matches (top ~5%) will appear`;
-        } else if (pct >= 85) {
-          thresholdDesc.textContent = `Show images scoring ≥ ${pct}% as relevant as the best match`;
-        } else if (pct >= 70) {
-          thresholdDesc.textContent = `Relaxed — shows a broader range of related images (≥ ${pct}%)`;
+          thresholdDesc.textContent = `Very strict — only excellent matches (CLIP ≥ ${clipMin}). Folders without relevant images return 0 results.`;
+        } else if (pct >= 80) {
+          thresholdDesc.textContent = `Moderate — filters random screenshots, shows good matches (CLIP ≥ ${clipMin})`;
+        } else if (pct >= 65) {
+          thresholdDesc.textContent = `Relaxed — shows a broader range of related images (CLIP ≥ ${clipMin})`;
         } else {
-          thresholdDesc.textContent = `Loose — shows any image with some relevance to the query (≥ ${pct}%)`;
+          thresholdDesc.textContent = `Loose — shows most images above noise level (CLIP ≥ ${clipMin}). May include less relevant results.`;
         }
       }
     });
