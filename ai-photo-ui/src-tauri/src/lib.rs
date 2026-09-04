@@ -161,7 +161,15 @@ fn start_daemon(root: &Path) -> Result<(), String> {
 /// Send one JSON command to the daemon and return the parsed response.
 /// The entire request-response cycle is protected by a single Mutex so
 /// concurrent Tauri command invocations don't interleave their I/O.
+///
+/// Stream-integrity guarantee: if the response line is not valid JSON
+/// (e.g., a stray print() output from Python that was not redirected to
+/// stderr), we drain up to MAX_DRAIN_ATTEMPTS extra lines from stdout
+/// looking for the real JSON response. This re-synchronizes the stream
+/// so the next call_daemon does not read a stale response.
 fn call_daemon(command: &str, args: Value) -> Result<Value, String> {
+    const MAX_DRAIN_ATTEMPTS: usize = 8;
+
     let daemon = DAEMON.get().ok_or("Daemon not ready")?;
     let mut io = daemon.io.lock().map_err(|_| "Daemon I/O lock poisoned".to_string())?;
 
@@ -175,18 +183,42 @@ fn call_daemon(command: &str, args: Value) -> Result<Value, String> {
         .and_then(|_| io.stdin.flush())
         .map_err(|e| format!("Write to daemon failed: {}", e))?;
 
-    let mut line = String::new();
-    io.stdout.read_line(&mut line)
-        .map_err(|e| format!("Read from daemon failed: {}", e))?;
+    // Read the response — drain non-JSON lines (stray prints) to keep stream aligned.
+    let mut attempts = 0;
+    loop {
+        let mut line = String::new();
+        io.stdout.read_line(&mut line)
+            .map_err(|e| format!("Read from daemon failed: {}", e))?;
 
-    let result: Value = serde_json::from_str(line.trim())
-        .map_err(|e| format!("Invalid JSON from daemon ({}): {}", e, line.trim()))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            attempts += 1;
+            if attempts >= MAX_DRAIN_ATTEMPTS {
+                return Err("Daemon returned empty response".to_string());
+            }
+            continue;
+        }
 
-    if result.get("status").and_then(Value::as_str) == Some("error") {
-        return Err(extract_error_message(&result, "Daemon command failed"));
+        match serde_json::from_str::<Value>(trimmed) {
+            Ok(result) => {
+                if result.get("status").and_then(Value::as_str) == Some("error") {
+                    return Err(extract_error_message(&result, "Daemon command failed"));
+                }
+                return Ok(result);
+            }
+            Err(_) => {
+                // Non-JSON line (stray print or debug output). Discard and read next.
+                attempts += 1;
+                if attempts >= MAX_DRAIN_ATTEMPTS {
+                    return Err(format!(
+                        "Daemon stream out of sync after {} drain attempts. Last line: {:?}",
+                        MAX_DRAIN_ATTEMPTS, trimmed
+                    ));
+                }
+                // Continue loop to read the real JSON response.
+            }
+        }
     }
-
-    Ok(result)
 }
 
 fn python_candidates(root: &Path) -> Vec<String> {
@@ -334,11 +366,26 @@ fn run_engine(
 fn engine_index(folder: String) -> Result<Value, String> {
     let response = run_engine("index", &folder, None, None, None, None, None)?;
 
+    // Invalidate search cache for this folder so re-indexing immediately
+    // reflects new results instead of returning stale cached data.
     if let Ok(mut cache) = search_cache().lock() {
         cache.retain(|k, _| !k.starts_with(&format!("{}::", folder)));
     }
 
     Ok(response)
+}
+
+/// Wipe the entire in-memory search result cache.
+/// Call this from JS after any re-indexing operation to ensure search
+/// queries return fresh results rather than stale pre-index data.
+#[tauri::command]
+fn engine_clear_search_cache() -> Result<Value, String> {
+    if let Ok(mut cache) = search_cache().lock() {
+        let count = cache.len();
+        cache.clear();
+        return Ok(serde_json::json!({ "status": "ok", "cleared": count }));
+    }
+    Err("Could not acquire search cache lock".to_string())
 }
 
 /// Streaming variant of run_engine used for indexing.
@@ -1640,7 +1687,8 @@ pub fn run() {
             get_all_tags,
             get_images_by_tag,
             get_image_note,
-            set_image_note
+            set_image_note,
+            engine_clear_search_cache
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

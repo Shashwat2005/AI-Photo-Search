@@ -1590,6 +1590,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     selectedFolders = Array.from(new Set(readyFolders));
     saveSelectedFolders();
     searchCache.clear();
+    // Also clear the Rust in-memory SEARCH_CACHE so stale pre-index results
+    // are not served for subsequent queries on re-indexed folders.
+    invoke("engine_clear_search_cache").catch(() => {/* non-critical */});
 
     // F1: Stop listening for progress events
     if (_unlistenProgress) try { _unlistenProgress(); } catch (_) {}
