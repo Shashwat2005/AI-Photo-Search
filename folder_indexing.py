@@ -952,10 +952,11 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
     query_emb = _get_cached_query_embedding(normalized_query)
     if query_emb is None:
         query_emb = get_model().encode(normalized_query, convert_to_numpy=True).astype("float32")
-        faiss.normalize_L2(query_emb.reshape(1, -1))
+        query_emb = query_emb.reshape(1, -1)   # MUST be 2D (1, dim) for FAISS
+        faiss.normalize_L2(query_emb)
         _put_query_embedding_in_cache(normalized_query, query_emb)
     else:
-        # Already normalized from cache — just reshape for FAISS
+        # Already normalized from cache — ensure 2D for FAISS
         query_emb = query_emb.reshape(1, -1)
 
     # 5. FAISS overfetch — always fetch 5× top_k so threshold filtering has
