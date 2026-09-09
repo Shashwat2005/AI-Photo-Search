@@ -178,6 +178,9 @@ fn call_daemon(command: &str, args: Value) -> Result<Value, String> {
         "args": args,
     })).map_err(|e| e.to_string())?;
 
+    eprintln!("[DAEMON-REQ] cmd={} args_keys={:?}", command,
+        args.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()).unwrap_or_default());
+
     io.stdin.write_all(request.as_bytes())
         .and_then(|_| io.stdin.write_all(b"\n"))
         .and_then(|_| io.stdin.flush())
@@ -193,6 +196,7 @@ fn call_daemon(command: &str, args: Value) -> Result<Value, String> {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             attempts += 1;
+            eprintln!("[DAEMON-DRAIN] cmd={} empty line (attempt {})", command, attempts);
             if attempts >= MAX_DRAIN_ATTEMPTS {
                 return Err("Daemon returned empty response".to_string());
             }
@@ -201,7 +205,13 @@ fn call_daemon(command: &str, args: Value) -> Result<Value, String> {
 
         match serde_json::from_str::<Value>(trimmed) {
             Ok(result) => {
-                if result.get("status").and_then(Value::as_str) == Some("error") {
+                // Log response summary
+                let resp_status = result.get("status").and_then(Value::as_str).unwrap_or("?");
+                let resp_results_len = result.get("results").and_then(Value::as_array).map(|a| a.len());
+                eprintln!("[DAEMON-RES] cmd={} status={} results_len={:?} attempts={}",
+                    command, resp_status, resp_results_len, attempts);
+
+                if resp_status == "error" {
                     return Err(extract_error_message(&result, "Daemon command failed"));
                 }
                 return Ok(result);
@@ -209,13 +219,14 @@ fn call_daemon(command: &str, args: Value) -> Result<Value, String> {
             Err(_) => {
                 // Non-JSON line (stray print or debug output). Discard and read next.
                 attempts += 1;
+                eprintln!("[DAEMON-DRAIN] cmd={} non-JSON line (attempt {}): {:?}",
+                    command, attempts, &trimmed[..trimmed.len().min(120)]);
                 if attempts >= MAX_DRAIN_ATTEMPTS {
                     return Err(format!(
                         "Daemon stream out of sync after {} drain attempts. Last line: {:?}",
                         MAX_DRAIN_ATTEMPTS, trimmed
                     ));
                 }
-                // Continue loop to read the real JSON response.
             }
         }
     }
@@ -478,9 +489,15 @@ fn engine_search(
         top_k,
     );
 
+    // Validate the cache entry: only serve it if it has a proper "results" array.
     if let Ok(cache) = search_cache().lock() {
         if let Some(cached) = cache.get(&key) {
-            return Ok(cached.clone());
+            if cached.get("results").and_then(Value::as_array).is_some() {
+                let n = cached.get("results").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0);
+                eprintln!("[ENGINE-SEARCH] CACHE HIT folder={} query={} results={}", folder, query, n);
+                return Ok(cached.clone());
+            }
+            eprintln!("[ENGINE-SEARCH] CACHE POISONED (no results array) folder={} query={}", folder, query);
         }
     }
 
@@ -489,12 +506,9 @@ fn engine_search(
     // Pass user threshold (0-1 relative fraction) to Python; 0.0 = use adaptive default
     let min_score_val = min_score.unwrap_or(0.0);
 
+    eprintln!("[ENGINE-SEARCH] CACHE MISS → calling daemon folder={} query={}", folder, query);
+
     // Use daemon for fast search (persistent CLIP model).
-    // NOTE: Do NOT use .or_else() subprocess fallback here. If call_daemon fails
-    // (e.g., parse error), the daemon's stdout buffer still has the unread
-    // response for this request. Falling back to a subprocess leaves that
-    // stale data in the buffer — the NEXT folder's call_daemon reads it instead
-    // of the new response, causing stream desynchronization (only 1 folder shows).
     let args = serde_json::json!({
         "folder": folder,
         "query": query,
@@ -505,9 +519,19 @@ fn engine_search(
     });
     let response = call_daemon("search", args)?;
 
-    if let Ok(mut cache) = search_cache().lock() {
-        cache.insert(key, response.clone());
-        trim_search_cache(&mut cache);
+    // Only cache responses that contain a valid "results" array.
+    let has_results_field = response.get("results").and_then(Value::as_array).is_some();
+    let results_count = response.get("results").and_then(Value::as_array)
+        .map(|a| a.len()).unwrap_or(0);
+
+    eprintln!("[ENGINE-SEARCH] RESULT folder={} query={} has_results={} count={}",
+        folder, query, has_results_field, results_count);
+
+    if has_results_field && results_count > 0 {
+        if let Ok(mut cache) = search_cache().lock() {
+            cache.insert(key, response.clone());
+            trim_search_cache(&mut cache);
+        }
     }
 
     Ok(response)

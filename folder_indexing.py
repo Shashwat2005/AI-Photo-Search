@@ -176,12 +176,14 @@ def _get_cached_query_result(cache_key: str):
     return None
 
 
-def _put_query_result_in_cache(cache_key: str, results: list):
-    """Store query result in LRU cache."""
+def _put_query_result_in_cache(cache_key: str, results: list, index_sig: str = ""):
+    """Store query result in LRU cache. Stores (index_sig, results) so the reader
+    can detect when the index has changed (e.g., after re-indexing) and avoid
+    returning stale cached results for a now-different FAISS index."""
     with _QUERY_RESULT_CACHE_LOCK:
         if cache_key in _QUERY_RESULT_CACHE:
             _QUERY_RESULT_CACHE.pop(cache_key)
-        _QUERY_RESULT_CACHE[cache_key] = results
+        _QUERY_RESULT_CACHE[cache_key] = (index_sig, results)
         if len(_QUERY_RESULT_CACHE) > _MAX_QUERY_RESULT_CACHE_SIZE:
             _QUERY_RESULT_CACHE.popitem(last=False)
 
@@ -907,14 +909,22 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
     )
 
     # 1. Check in-memory query result cache (fastest - no disk I/O)
-    cached_result = _get_cached_query_result(cache_key)
-    if cached_result is not None:
-        # Sanity-check: raw CLIP cosine scores must be in [0.0, 0.65].
-        # Old cached results used normalized scores (0.9-1.0) which would
-        # produce 100% badges. Reject silently so a fresh search runs.
-        if all(0.0 <= r.get("score", 0) <= 0.65 for r in cached_result):
-            return cached_result
-        # else: stale format in memory cache — fall through to recompute
+    cached_entry = _get_cached_query_result(cache_key)
+    if cached_entry is not None:
+        # Support both old format (list) and new format ((sig, list)) tuples
+        if isinstance(cached_entry, tuple) and len(cached_entry) == 2:
+            cached_sig, cached_result = cached_entry
+        else:
+            cached_sig, cached_result = "", cached_entry  # legacy format
+
+        # Reject if the index changed (e.g., user re-indexed new photos)
+        if cached_sig == index_sig:
+            # Sanity-check: raw CLIP cosine scores must be in [0.0, 0.65].
+            # Old cached results used normalized scores (0.9-1.0) which would
+            # produce 100% badges. Reject silently so a fresh search runs.
+            if all(0.0 <= r.get("score", 0) <= 0.65 for r in cached_result):
+                return cached_result
+        # else: index changed or stale format — fall through to recompute
 
     # 2. Check on-disk query cache (persistent across restarts)
     cache = _load_query_cache(index_dir)
@@ -984,7 +994,8 @@ def search_images_in_folder(folder_path: Path, query: str, top_k: int = 5, min_s
     results = results[:top_k]
 
     # 8. Cache results in both memory and disk
-    _put_query_result_in_cache(cache_key, results)
+    # Include index_sig so re-indexing invalidates the in-memory cache entry.
+    _put_query_result_in_cache(cache_key, results, index_sig=index_sig)
 
     entries = cache.get("entries", {}) if cache.get("index_signature") == index_sig else {}
     entries[cache_key] = results
